@@ -41,8 +41,7 @@
       "command": "make clean;make",
       "dependsOn": [
         "build_libdaisy",
-        "build_daisysp",
-        "build_cloudseed"
+        "build_daisysp"
       ],
       "label": "build_all",
       "options": {
@@ -54,11 +53,11 @@
       "type": "shell"
     },
     {
-      "command": "make clean;DEBUG=1 make",
+      "command": "make",
+      "args": ["clean", "all", "DEBUG=1"],
       "dependsOn": [
         "build_libdaisy",
-        "build_daisysp",
-        "build_cloudseed"
+        "build_daisysp"
       ],
       "label": "build_all_debug",
       "options": {
@@ -104,15 +103,29 @@
       "type": "shell"
     },
     {
-      "command": "make",
-      "label": "build_cloudseed",
-      "options": {
-        "cwd": "${workspaceFolder}/dependencies/Cloudseed"
-      },
-      "problemMatcher": [
-        "$gcc"
+      "command": "g++",
+      "label": "run_unit_tests",
+      "type": "shell",
+      "args": [
+        "-std=c++17",
+        "-Isrc",
+        "-I/usr/local/include",
+        "tests/test_playing_head.cpp",
+        "src/playing_head.cpp",
+        "-L/usr/local/lib",
+        "-lgtest",
+        "-lgtest_main",
+        "-pthread",
+        "-o",
+        "runTests",
+        "&&",
+        "./runTests"
       ],
-      "type": "shell"
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
     }
   ],
   "version": "2.0.0"
