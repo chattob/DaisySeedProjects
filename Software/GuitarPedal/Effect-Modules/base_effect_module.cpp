@@ -1,5 +1,5 @@
 #include "base_effect_module.h"
-#include "../Util/audio_utilities.h"
+//#include "../Util/audio_utilities.h"
 
 // This can be used to show the CPU on the default UI
 constexpr bool showCPU = false;
@@ -378,6 +378,11 @@ void BaseEffectModule::ProcessStereo(float inL, float inR) {
     m_audioRight = inR;
 }
 
+bool BaseEffectModule::Poll() {
+    // Do nothing.
+    return true;
+}
+
 float BaseEffectModule::GetAudioLeft() const { return m_audioLeft; }
 
 float BaseEffectModule::GetAudioRight() const { return m_audioRight; }
@@ -398,12 +403,16 @@ void BaseEffectModule::SetEnabled(bool isEnabled) { m_isEnabled = isEnabled; }
 
 bool BaseEffectModule::IsEnabled() const { return m_isEnabled; }
 
+void BaseEffectModule::BypassFootswitchPressed() {
+    m_isEnabled = !m_isEnabled;
+}
+
 void BaseEffectModule::SetTempo(uint32_t bpm) {
     // Do nothing.
 
     // Not all Effects are time based.
 
-    // Effect modules are expected to override this fucntion if they are time based.
+    // Effect modules are expected to override this function if they are time based.
 }
 
 void BaseEffectModule::ParameterChanged(int parameter_id) {

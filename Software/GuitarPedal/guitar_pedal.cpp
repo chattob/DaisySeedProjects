@@ -1,59 +1,26 @@
 #include "daisysp.h"
-#include "guitar_pedal_storage.h"
-#include "loaded_effects.h"
+#include "daisy_seed.h"
 #include <string.h>
-
-#include "UI/guitar_pedal_ui.h"
+#include "Hardware-Modules/guitar_pedal_125b.h"
+#include "Effect-Modules/base_effect_module.h"
+#include "Effect-Modules/delay_module.h"
+#include "Effect-Modules/looper_module.h"
+#include "Effect-Modules/distortion_module.h"
+#include "Effect-Modules/crusher_module.h"
 #include "Util/audio_utilities.h"
+#include <vector>
 
 using namespace daisy;
 using namespace daisysp;
 using namespace bkshepherd;
 
-// Uncomment the version you are trying to use, by default (and if nothing is
-// uncommented), the 125B with 2 footswitch variant will be used
-
-// #define VARIANT_125B
-// #define VARIANT_1590B
-// #define VARIANT_1590B_SMD
-// #define VARIANT_TERRARIUM
-
-#if defined(VARIANT_TERRARIUM)
-#include "Hardware-Modules/guitar_pedal_terrarium.h"
-constexpr bool has_alternate_footswitch = true;
-GuitarPedalTerrarium hardware;
-#elif defined(VARIANT_1590B)
-#include "Hardware-Modules/guitar_pedal_1590b.h"
-constexpr bool has_alternate_footswitch = false;
-GuitarPedal1590B hardware;
-#elif defined(VARIANT_1590B_SMD)
-#include "Hardware-Modules/guitar_pedal_1590b-SMD.h"
-constexpr bool has_alternate_footswitch = false;
-GuitarPedal1590BSMD hardware;
-#else
-#include "Hardware-Modules/guitar_pedal_125b.h"
-constexpr bool has_alternate_footswitch = true;
 GuitarPedal125B hardware;
-#endif
-
-// Persistant Storage
-PersistentStorage<Settings> storage(hardware.seed.qspi);
 
 // Effect Related Variables
-int availableEffectsCount = 0;
-BaseEffectModule **availableEffects = nullptr;
-int activeEffectID = 0;
-int prevActiveEffectID = 0;
-int tunerModuleIndex = -1;
-BaseEffectModule *activeEffect = nullptr;
-
-// UI Related Variables
-GuitarPedalUI guitarPedalUI;
+std::vector<BaseEffectModule*> effectChain;
 
 // Hardware Related Variables
-bool useDebugDisplay = false;
 bool effectOn = false;
-
 bool muteOn = false;
 float muteOffTransitionTimeInSeconds = 0.02f;
 int muteOffTransitionTimeInSamples;
@@ -67,15 +34,9 @@ int samplesTilBypassToggle;
 uint32_t lastTimeStampUS;
 float secondsSinceStartup = 0.0f;
 
-bool needToSaveSettingsForActiveEffect = false;
-uint32_t last_save_time; // Time we last set it
-
 // Used to debounce quick switching to/from the tuner
 bool ignoreBypassSwitchUntilNextActuation = false;
 bool effectActiveBeforeQuickSwitch = false;
-
-// Time we last changed effect
-uint32_t last_effect_change_time;
 
 // Pot Monitoring Variables
 bool knobValuesInitialized = false;
@@ -83,7 +44,7 @@ float knobValueDeadZone = 0.05f; // Dead zone on both ends of the raw knob range
 float knobValueChangeTolerance = 1.0f / 256.0f;
 float knobValueIdleTimeInSeconds = 1.0f;
 int knobValueIdleTimeInSamples;
-bool *knobValueCacheChanged = nullptr;
+volatile bool *knobValueCacheChanged = nullptr;
 float *knobValueCache = nullptr;
 int *knobValueSamplesTilIdle = nullptr;
 
@@ -93,6 +54,7 @@ int switchEnabledIdleTimeInSamples;
 bool *switchEnabledCache = nullptr;
 bool *switchDoubleEnabledCache = nullptr;
 int *switchEnabledSamplesTilIdle = nullptr;
+bool *switchesHeldFired = nullptr;
 
 // Tempo
 bool needToChangeTempo = false;
@@ -106,8 +68,45 @@ int crossFaderTransitionTimeInSamples;
 int samplesTilCrossFadingComplete;
 CpuLoadMeter cpuLoadMeter;
 
-void SetActiveEffect(int effectID);
+enum class KnobCurve {
+    LinearInc,
+    LinearDec,
+};
 
+struct KnobRoute {
+    BaseEffectModule*   effect;
+    int                 paramId;   // index into that effect's parameter array
+    float               outMin     = 0.0f;   // mapped range min
+    float               outMax     = 1.0f;   // mapped range max
+};
+
+std::vector<std::vector<KnobRoute>> knobRoutes;
+
+enum class SwitchAction {
+    AltPressed,
+    AltReleased,
+    AltHeld1s,
+
+    BypassPressed,
+    BypassReleased,
+    BypassHeld1s,
+};
+
+struct SwitchRoute {
+    BaseEffectModule* effect;
+    SwitchAction      action;
+};
+
+std::vector<std::vector<SwitchRoute>> switchRoutes;
+
+static inline BaseEffectModule* First()
+{
+    return effectChain.empty() ? nullptr : effectChain[0];
+}
+
+//======================================================================
+//                            AUDIO CALLBACK
+//======================================================================
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     cpuLoadMeter.OnBlockStart();
 
@@ -122,16 +121,12 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     // Handle Inputs
     hardware.ProcessAnalogControls();
     hardware.ProcessDigitalControls();
-    guitarPedalUI.GenerateUIEvents();
-
-    // Get a handle to the persitance storage settings
-    Settings &settings = storage.GetSettings();
 
     // Process the Pots
     float knobValueRaw;
 
-    for (int i = 0; i < hardware.GetKnobCount(); i++) {
-        knobValueRaw = hardware.GetKnobValue(i);
+    for (int i = 0; i < hardware.GetParameterControlCount(); i++) {
+        knobValueRaw = hardware.GetParameterControlValue(i);
 
         // Knobs don't perfectly return values in the 0.0f - 1.0f range
         // so we will add some deadzone to either end of the knob and remap values into
@@ -146,7 +141,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 
         if (!knobValuesInitialized) {
             // Initialize the knobs for the first time to whatever the current knob placements are
-            knobValueCacheChanged[i] = false;
+            knobValueCacheChanged[i] = true;
             knobValueSamplesTilIdle[i] = 0;
             knobValueCache[i] = knobValueRaw;
         } else {
@@ -179,150 +174,101 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     // we need to perform a toggle at the end of processing the switches
     bool oldEffectOn = effectOn;
 
-    // Process potential footswitch actions before the main switch processing loop
-    if (has_alternate_footswitch) {
-        // Handle the scenario where have 2 footswitches
+    // For looper, we force effect ON. Remove this line for bypassable effects.
+    effectOn = true;
 
-        // If both footswitches are down, save the parameters for this effect to
-        // persistant storage If there is only one footswitch, it will do
-        // parameter saving here when held instead of tuner quick switching later
-        if (hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass)].TimeHeldMs() > 2000 &&
-            hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)].TimeHeldMs() >
-                2000 &&
-            !guitarPedalUI.IsShowingSavingSettingsScreen() && !ignoreBypassSwitchUntilNextActuation) {
+    // Process the switches
+    for (int sw = 0; sw < hardware.GetSwitchCount(); ++sw) {
+        bool switchPressed  = hardware.switches[sw].RisingEdge();
+        bool switchReleased = hardware.switches[sw].FallingEdge();
+        bool switchHeld  = hardware.switches[sw].TimeHeldMs() >= 1000.f;
 
-            needToSaveSettingsForActiveEffect = true;
-            ignoreBypassSwitchUntilNextActuation = true;
-        }
+        // Dispatch all routes for this switch
+        for (const auto &r : switchRoutes[sw]) {
+            if (!r.effect) continue;
 
-        // If bypass is held for 2 seconds and alternate footswitch is not
-        // pressed (not trying to save) then perform an action
-        if (hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass)].TimeHeldMs() > 2000 &&
-            !hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)].Pressed() &&
-            !ignoreBypassSwitchUntilNextActuation) {
+            switch (r.action) {
+                // SHORT PRESS -> fire on RisingEdge
+                case SwitchAction::AltPressed:
+                    if (switchPressed) {
+                        r.effect->AlternateFootswitchPressed();
+                    }
+                    break;
 
-            // If we have a screen and there is a tuner module, we quick switch
-            // to it, otherwise we just cycle through the effects
-            if (hardware.SupportsDisplay() && tunerModuleIndex > 0) {
-                // Start the quick switch to the tuner
-                if (activeEffectID == tunerModuleIndex) {
-                    // Set back the active effect before the quick switch
-                    SetActiveEffect(prevActiveEffectID);
+                case SwitchAction::BypassPressed:
+                    if (switchPressed) {
+                        r.effect->BypassFootswitchPressed();
+                    }
+                    break;
 
-                    // Restore the effect state from when we quick switched, this is an
-                    // inverse because the act of holding the switch caused the state to
-                    // chnage due to the rising edge being detected
-                    effectOn = !effectActiveBeforeQuickSwitch;
-                    activeEffect->SetEnabled(effectOn);
-                } else {
-                    // Store if effect is on or not when quick switching
-                    effectActiveBeforeQuickSwitch = effectOn;
+                // RELEASE -> fire on FallingEdge (also clear held-guard)
+                case SwitchAction::AltReleased:
+                    if (switchReleased) {
+                        r.effect->AlternateFootswitchReleased();
 
-                    // Switch to tuner and force it to be enabled
-                    SetActiveEffect(tunerModuleIndex);
-                    effectOn = true;
-                    activeEffect->SetEnabled(effectOn);
-                }
-                ignoreBypassSwitchUntilNextActuation = true;
-            } else {
-                // Cycle to the next effect
-                int newActiveEffectId = activeEffectID + 1;
+                        // Reset held flag so future holds can fire
+                        switchesHeldFired[sw] = false;
+                    }
+                    break;
 
-                // Skip over the tuner if there is no screen
-                if (newActiveEffectId == tunerModuleIndex) {
-                    newActiveEffectId++;
-                }
+                case SwitchAction::BypassReleased:
+                    if (switchReleased) {
+                        r.effect->BypassFootswitchReleased();
 
-                if (newActiveEffectId > availableEffectsCount - 1) {
-                    newActiveEffectId = 0;
-                }
+                        // Reset held flag so future holds can fire
+                        switchesHeldFired[sw] = false;
+                    }
+                    break;
 
-                SetActiveEffect(newActiveEffectId);
+                // HELD (1s) -> fire once when hold threshold reached, guarded by switchesHeldFired
+                case SwitchAction::AltHeld1s:
+                    if (switchHeld && !switchesHeldFired[sw]) {
+                        r.effect->AlternateFootswitchHeldFor1Second();
+                        switchesHeldFired[sw] = true; // prevent repeated calls until release
+                    }
+                    break;
 
-                effectOn = false;
-                activeEffect->SetEnabled(effectOn);
-
-                ignoreBypassSwitchUntilNextActuation = true;
+                case SwitchAction::BypassHeld1s:
+                    if (switchHeld && !switchesHeldFired[sw]) {
+                        r.effect->BypassFootswitchHeldFor1Second();
+                        switchesHeldFired[sw] = true; // prevent repeated calls until release
+                    }
+                    break;
             }
         }
 
-        // Disable quick switching until the footswitch is released to prevent infinite switching
-        // also prevents saving from toggling quick switch.
-        if (ignoreBypassSwitchUntilNextActuation &&
-            !hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass)].Pressed()) {
-            ignoreBypassSwitchUntilNextActuation = false;
-        }
-    } else {
-        // Handle the scenario where we only have 1 footswitch
-        if (hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass)].TimeHeldMs() > 2000 &&
-            !guitarPedalUI.IsShowingSavingSettingsScreen()) {
-            needToSaveSettingsForActiveEffect = true;
-        }
-    }
+        // Ensure the held-flag is cleared if user releases the button without any 'Released' route mapped
+        // (keeps held-guard consistent even if no route calls reset it)
+        if (switchReleased) {switchesHeldFired[sw] = false;}
 
-    // Process the switches
-    for (int i = 0; i < hardware.GetSwitchCount(); i++) {
-        bool switchPressed = hardware.switches[i].RisingEdge();
+        if (switchEnabledCache[sw] == true) {
+            switchEnabledSamplesTilIdle[sw] -= size;
 
-        // If this is the bypass switch, check for a bypass transition already
-        // in progress (isCrossFading), and toggle the effect if the switch is
-        // pressed
-        if (!ignoreBypassSwitchUntilNextActuation && !isCrossFading &&
-            i == hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass) && switchPressed) {
-            effectOn = !effectOn;
-        }
+            if (switchEnabledSamplesTilIdle[sw] <= 0) {
+                switchEnabledCache[sw] = false;
 
-        if (effectOn && switchPressed && i == hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)) {
-            activeEffect->AlternateFootswitchPressed();
-        }
-
-        bool switchReleased = hardware.switches[i].FallingEdge();
-        if (effectOn && switchReleased && i == hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)) {
-            activeEffect->AlternateFootswitchReleased();
-        }
-
-        bool switchHeld = hardware.switches[i].TimeHeldMs() >= 1000.f;
-        if (effectOn && switchHeld && i == hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)) {
-            activeEffect->AlternateFootswitchHeldFor1Second();
-        }
-
-        if (switchEnabledCache[i] == true) {
-            switchEnabledSamplesTilIdle[i] -= size;
-
-            if (switchEnabledSamplesTilIdle[i] <= 0) {
-                switchEnabledCache[i] = false;
-
-                if (switchDoubleEnabledCache[i] != true) {
+                if (switchDoubleEnabledCache[sw] != true) {
                     // We can safely know this was only a single tap here.
                 }
 
-                switchDoubleEnabledCache[i] = false;
+                switchDoubleEnabledCache[sw] = false;
             }
         }
 
         if (switchPressed) {
             // Note that switch is pressed and reset the IdleTimer for detecting double presses
-            switchEnabledCache[i] = switchPressed;
+            switchEnabledCache[sw] = switchPressed;
 
-            if (switchEnabledSamplesTilIdle[i] > 0) {
-                switchDoubleEnabledCache[i] = true;
-
-                // Register as Tap Tempo if Switch ID matched preferred mapping for TapTempo
-                if (activeEffect->AlternateFootswitchForTempo() &&
-                    i == hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)) {
-                    needToChangeTempo = true;
-                    float timeBetweenPresses =
-                        hardware.GetTimeForNumberOfSamples(switchEnabledIdleTimeInSamples - switchEnabledSamplesTilIdle[i]);
-                    globalTempoBPM = s_to_tempo(timeBetweenPresses);
-                }
+            if (switchEnabledSamplesTilIdle[sw] > 0) {
+                switchDoubleEnabledCache[sw] = true;
             }
 
-            switchEnabledSamplesTilIdle[i] = switchEnabledIdleTimeInSamples;
+            switchEnabledSamplesTilIdle[sw] = switchEnabledIdleTimeInSamples;
         }
     }
 
     // Handle updating the Hardware Bypass & Muting signals
-    if (hardware.SupportsTrueBypass() && settings.globalRelayBypassEnabled) {
+    if (hardware.SupportsTrueBypass()) {
         hardware.SetAudioBypass(bypassOn);
         hardware.SetAudioMute(muteOn);
     } else {
@@ -333,8 +279,9 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     // Handle Effect State being Toggled.
     if (effectOn != oldEffectOn) {
         // Set the stats on the effect
-        if (activeEffect != nullptr) {
-            activeEffect->SetEnabled(effectOn);
+        for (auto* effect : effectChain) {
+            if (!effect) continue;
+            effect->SetEnabled(effectOn);
         }
 
         // Setup the crossfade
@@ -343,7 +290,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         isCrossFadingForward = effectOn;
 
         // Start the timing sequence for the Hardware Mute and Relay Bypass.
-        if (hardware.SupportsTrueBypass() && settings.globalRelayBypassEnabled) {
+        if (hardware.SupportsTrueBypass()) {
             // Immediately Mute the Output using the Hardware Mute.
             muteOn = true;
 
@@ -392,48 +339,39 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         inputLeft = in[0][i];
         inputRight = in[1][i];
 
-        // Split the Mono Input to Stereo (Only allowed if relay bypass non enabled)
-        if (settings.globalSplitMonoInputToStereo && !settings.globalRelayBypassEnabled) {
-            inputRight = inputLeft;
-        }
-
-        // Setup Master Crossfader. By default source & target is always the input signal
-        float crossFadeSourceLeft = inputLeft;
+        float crossFadeSourceLeft  = inputLeft;
         float crossFadeSourceRight = inputRight;
-        float crossFadeTargetLeft = inputLeft;
+        float crossFadeTargetLeft  = inputLeft;
         float crossFadeTargetRight = inputRight;
-        float effectOutputLeft = inputLeft;
-        float effectOutputRight = inputRight;
 
-        // Only calculate the active effect when it's needed
-        if (activeEffect != nullptr && (effectOn || isCrossFading)) {
-            // Apply the Active Effect
-            if (hardware.SupportsStereo()) {
-                activeEffect->ProcessStereo(inputLeft, inputRight);
-            } else {
-                activeEffect->ProcessMono(inputLeft);
+        float wl = inputLeft;
+        float wr = inputRight;
+
+        if (!effectChain.empty() && (effectOn || isCrossFading)) {
+            for (auto* fx : effectChain) {
+                if (!fx) continue;
+                if (hardware.SupportsStereo()) {
+                    fx->ProcessStereo(wl, wr);
+                } else {
+                    fx->ProcessMono(wl);
+                    // wr = wl; // only if your mono effects don’t set both outputs
+                }
+                wl = fx->GetAudioLeft();
+                wr = fx->GetAudioRight();
             }
-
-            effectOutputLeft = activeEffect->GetAudioLeft();
-            effectOutputRight = activeEffect->GetAudioRight();
-
-            // Update state of the LEDs
-            led1Brightness = activeEffect->GetBrightnessForLED(0);
-            led2Brightness = activeEffect->GetBrightnessForLED(1);
         }
 
-        // Setup the crossfade target to be the effect
-        crossFadeTargetLeft = effectOutputLeft;
-        crossFadeTargetRight = effectOutputRight;
+        crossFadeTargetLeft  = wl;
+        crossFadeTargetRight = wr;
 
         out[0][i] = crossFaderLeft.Process(crossFadeSourceLeft, crossFadeTargetLeft);
         out[1][i] = crossFaderRight.Process(crossFadeSourceRight, crossFadeTargetRight);
-    }
 
-    // Override LEDs if we are saving the current settings
-    if (guitarPedalUI.IsShowingSavingSettingsScreen()) {
-        led1Brightness = 1.0f;
-        led2Brightness = 1.0f;
+        // Update state of the LEDs
+        if (auto* effect = First()) {
+            led1Brightness = effect->GetBrightnessForLED(0);
+            led2Brightness = effect->GetBrightnessForLED(1);
+        }   
     }
 
     // Handle LEDs
@@ -444,116 +382,12 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     cpuLoadMeter.OnBlockEnd();
 }
 
-void SetActiveEffect(int effectID) {
-    if (effectID >= 0 && effectID < availableEffectsCount) {
-        // Store the last used effect
-        prevActiveEffectID = activeEffectID;
-
-        // Update the ID cache
-        activeEffectID = effectID;
-
-        // Update the Active Effect directly.
-        activeEffect = availableEffects[effectID];
-
-        guitarPedalUI.UpdateActiveEffect(effectID);
-
-        // Get a handle to the persitance storage settings
-        Settings &settings = storage.GetSettings();
-
-        // Update the persistant storage setting
-        settings.globalActiveEffectID = effectID;
-
-        last_effect_change_time = System::GetNow();
-    }
-}
-
-// Typical Switch case for Message Type.
-void HandleMidiMessage(MidiEvent m) {
-    if (!hardware.SupportsMidi()) {
-        return;
-    }
-
-    // Get a handle to the persitance storage settings
-    Settings &settings = storage.GetSettings();
-
-    int channel = 0;
-
-    // Make sure the settings midi channel is within the proper range
-    // and convert the channel to be zero indexed instead of 1 like the setting.
-    if (settings.globalMidiChannel >= 1 && settings.globalMidiChannel <= 16) {
-        channel = settings.globalMidiChannel - 1;
-    }
-
-    // Pass the midi message through to midi out if so desired (only handles non system event types)
-    if (settings.globalMidiThrough && m.type < SystemCommon) {
-        // Re-pack the Midi Message
-        uint8_t midiData[3];
-
-        midiData[0] = 0b10000000 | ((uint8_t)m.type << 4) | ((uint8_t)m.channel);
-        midiData[1] = m.data[0];
-        midiData[2] = m.data[1];
-
-        int bytesToSend = 3;
-
-        if (m.type == ChannelPressure || m.type == ProgramChange) {
-            bytesToSend = 2;
-        }
-
-        hardware.midi.SendMessage(midiData, sizeof(uint8_t) * bytesToSend);
-    }
-
-    // Only listen to messages for the devices set channel.
-    if (m.channel != channel) {
-        return;
-    }
-
-    switch (m.type) {
-    case NoteOn: {
-        if (activeEffect != NULL) {
-            NoteOnEvent p = m.AsNoteOn();
-            activeEffect->OnNoteOn(p.note, p.velocity);
-        }
-        break;
-    }
-    case NoteOff: {
-        if (activeEffect != NULL) {
-            NoteOnEvent p = m.AsNoteOn();
-            activeEffect->OnNoteOff(p.note, p.velocity);
-        }
-        break;
-    }
-    case ControlChange: {
-        if (activeEffect != nullptr) {
-            ControlChangeEvent p = m.AsControlChange();
-
-            // Notify the activeEffect to handle this midi cc / value
-            activeEffect->MidiCCValueNotification(p.control_number, p.value);
-
-            // Notify the UI to update if this CC message was mapped to an EffectParameter
-            int effectParamID = activeEffect->GetMappedParameterIDForMidiCC(p.control_number);
-
-            if (effectParamID != -1) {
-                guitarPedalUI.UpdateActiveEffectParameterValue(effectParamID, true);
-            }
-        }
-        break;
-    }
-    case ProgramChange: {
-        ProgramChangeEvent p = m.AsProgramChange();
-
-        if (p.program >= 0 && p.program < availableEffectsCount) {
-            SetActiveEffect(p.program);
-        }
-        break;
-    }
-    default:
-        break;
-    }
-}
-
+//======================================================================
+//                               MAIN SECTION
+//======================================================================
 int main(void) {
     const size_t blockSize = 48;
-    const bool boost = true; // true enables cpu boost (480Mhz instead of 400Mhz)
+    const bool boost = false; // true enables cpu boost (480Mhz instead of 400Mhz)
 
     hardware.Init(blockSize, boost);
 
@@ -567,63 +401,111 @@ int main(void) {
     bypassToggleTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(bypassToggleTransitionTimeInSeconds);
     crossFaderTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(crossFaderTransitionTimeInSeconds);
 
-    // Init the Effects Modules
-    load_effects(availableEffectsCount, availableEffects);
+    auto* looper = new LooperModule();
+    auto* delay  = new DelayModule();
+    auto* distortion  = new DistortionModule();
+    auto* crusher = new CrusherModule();
 
-    for (int i = 0; i < availableEffectsCount; i++) {
-        availableEffects[i]->Init(sample_rate);
+    // Fix some effect parameters
+    // delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
+    delay->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, 2);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, 6);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_FREQ, 0.65f);
 
-        if (std::string(availableEffects[i]->GetName()) == std::string("Tuner")) {
-            // Store the index for the tuner module so that we can quickswitch
-            // to/from it
-            tunerModuleIndex = i;
-        }
+    distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
+    distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
+    distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
+
+    //effectChain.push_back(looper);
+    effectChain.push_back(delay);
+    //effectChain.push_back(distortion);
+    effectChain.push_back(crusher);
+    
+    for (auto* effect : effectChain) {
+        effect->Init(sample_rate);
     }
 
-    // Initalize Persistance Storage
-    InitPersistantStorage();
+    // Size the routes to the real knob count
+    const int knobCount = hardware.GetParameterControlCount();
+    knobRoutes.resize(knobCount);
 
-    Settings &settings = storage.GetSettings();
+    // Size the routes to the real switches count
+    switchRoutes.resize(hardware.GetSwitchCount());
 
-    // Load all the effect specific settings
-    LoadEffectSettingsFromPersistantStorage();
+    // Setup knob routes
+    knobRoutes[0].push_back({looper, LooperModule::LAYER});
 
-    // Set the active effect
-    activeEffect = availableEffects[settings.globalActiveEffectID];
-    activeEffectID = settings.globalActiveEffectID;
-    activeEffect->SetEnabled(effectOn);
+    knobRoutes[1].push_back({looper, LooperModule::SPEED});
 
-    // Init the Menu UI System
-    if (hardware.SupportsDisplay()) {
-        guitarPedalUI.Init();
-    }
+    knobRoutes[2].push_back({looper, LooperModule::SLICE});
 
-    // Set up midi if supported.
-    if (hardware.SupportsMidi()) {
-        hardware.midi.StartReceive();
-    }
+    knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
+
+    knobRoutes[4].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
+    knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY, 0.0f, 0.8f});
+    knobRoutes[4].push_back({distortion, DistortionModule::MIX, 0.0f, 0.8f});
+    knobRoutes[4].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
+    knobRoutes[4].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});
+
+
+    /*
+    knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
+    knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
+    knobRoutes[2].push_back({delay, DelayModule::D_FEEDBACK});
+    knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
+    knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});
+
+    knobRoutes[0].push_back({distortion, DistortionModule::LEVEL});
+    knobRoutes[1].push_back({distortion, DistortionModule::GAIN});
+    knobRoutes[2].push_back({distortion, DistortionModule::TONE});
+    knobRoutes[3].push_back({distortion, DistortionModule::DIST_TYPE});
+    knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY});
+    knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});
+    */
+
+    // 1: layers, 2: fading, 3: stability/bitcrusher, 4: slice/stretch, 5: speed/pitch, 6: distortion
+    // A: single/all/direct B:fixed/flex C:
+
+    int altSwitchID    = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
+    int bypassSwitchID = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
+
+    // Alternate footswitch: toggle delay pressed & looper held
+    switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltPressed});
+    switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
+    switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
+    switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
+    switchRoutes[bypassSwitchID].push_back({crusher, SwitchAction::BypassPressed});
+
+    // Main/bypass footswitch
+    switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
 
     // Setup Relay Bypass State
-    if (hardware.SupportsTrueBypass() && settings.globalRelayBypassEnabled) {
+    if (hardware.SupportsTrueBypass()) {
         bypassOn = true;
     }
 
     // Init the Knob Monitoring System
-    knobValueCacheChanged = new bool[hardware.GetKnobCount()];
-    knobValueCache = new float[hardware.GetKnobCount()];
-    knobValueSamplesTilIdle = new int[hardware.GetKnobCount()];
+    knobValueCacheChanged = new bool[hardware.GetParameterControlCount()];
+    knobValueCache = new float[hardware.GetParameterControlCount()];
+    knobValueSamplesTilIdle = new int[hardware.GetParameterControlCount()];
     knobValueIdleTimeInSamples = hardware.GetNumberOfSamplesForTime(knobValueIdleTimeInSeconds);
 
     // Init the Switch Monitoring System
     switchEnabledCache = new bool[hardware.GetSwitchCount()];
     switchDoubleEnabledCache = new bool[hardware.GetSwitchCount()];
     switchEnabledSamplesTilIdle = new int[hardware.GetSwitchCount()];
+    switchesHeldFired = new bool[hardware.GetSwitchCount()];
     switchEnabledIdleTimeInSamples = hardware.GetNumberOfSamplesForTime(switchEnabledIdleTimeInSeconds);
 
     for (int i = 0; i < hardware.GetSwitchCount(); i++) {
         switchEnabledCache[i] = false;
         switchDoubleEnabledCache[i] = false;
         switchEnabledSamplesTilIdle[i] = 0;
+        switchesHeldFired[i] = false;
     }
 
     // Setup the cross fader
@@ -650,6 +532,13 @@ int main(void) {
         float elapsedTimeInSeconds = (elapsedTimeStampUS / 1000000.0f);
         secondsSinceStartup = secondsSinceStartup + elapsedTimeInSeconds;
 
+        // Run polling action.
+        bool res = false;
+        for (auto* effect : effectChain) {
+            if (!effect) continue;
+            res |= effect->Poll();
+        }
+
         // Handle Knob Changes
         if (!knobValuesInitialized && secondsSinceStartup > 1.0f) {
             // Let the initial readings of the knob values settle before trying to use them.
@@ -657,103 +546,21 @@ int main(void) {
         }
 
         if (knobValuesInitialized) {
-            for (int i = 0; i < hardware.GetKnobCount(); i++) {
-                if (knobValueCacheChanged[i]) {
-                    int parameterID = activeEffect->GetMappedParameterIDForKnob(i);
+            // Only iterate the real knobs reported by hardware
+            for (int k = 0; k < knobCount; ++k) {
+                if (!knobValueCacheChanged[k]) continue;
 
-                    if (parameterID != -1) {
-                        // Set the new value on the effect parameter directly
-                        activeEffect->SetParameterAsMagnitude(parameterID, knobValueCache[i]);
+                float v = knobValueCache[k]; // normalized 0..1 after deadzone mapping
 
-                        // Update the effect parameter on the menu system to reflect the change
-                        guitarPedalUI.UpdateActiveEffectParameterValue(parameterID, true);
-                    }
+                // Send to all mapped targets of knob k
+                for (const KnobRoute &r : knobRoutes[k]) {
+                    if (!r.effect) continue;               // safety: null-check
+                    if (r.paramId < 0) continue;          // safety: invalid param id
+
+                    r.effect->SetParameterAsMagnitude(r.paramId, r.outMin + v * (r.outMax - r.outMin));
                 }
             }
         }
 
-        // Handle Global Tempo Changes
-        if (needToChangeTempo) {
-            activeEffect->SetTempo(globalTempoBPM);
-            needToChangeTempo = false;
-
-            // Update the effect parameters on the menu system to reflect any changes
-            guitarPedalUI.UpdateActiveEffectParameterValues();
-        }
-
-        // If alt footswitch held AND encoder turned, iterate to next/previous effect, also throttle the changes
-        const int encoderIncrement = hardware.encoders[0].Increment();
-        if (has_alternate_footswitch &&
-            hardware.switches[hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate)].Pressed() &&
-            encoderIncrement != 0 && System::GetNow() - last_effect_change_time >= 10) {
-            int desiredIndex = activeEffectID - encoderIncrement;
-            if (desiredIndex > availableEffectsCount - 1) {
-                desiredIndex = 0;
-            } else if (desiredIndex < 0) {
-                desiredIndex = availableEffectsCount - 1;
-            }
-            SetActiveEffect(desiredIndex);
-        }
-
-        if (hardware.SupportsDisplay()) {
-            // Handle a Change in the Active Effect from the Menu System
-
-            // Check which effect the Menu system thinks is active
-            int menuEffectID = guitarPedalUI.GetActiveEffectIDFromSettingsMenu();
-            BaseEffectModule *selectedEffect = availableEffects[menuEffectID];
-
-            // If the effect differs from the active effect, change the active effect
-            if (activeEffect != selectedEffect) {
-                SetActiveEffect(menuEffectID);
-            }
-        }
-
-        // Set the latest cpu load to the effect
-        activeEffect->SetCPUUsage(cpuLoadMeter.GetAvgCpuLoad());
-
-        // Handle Display
-        if (hardware.SupportsDisplay()) {
-            if (useDebugDisplay) {
-                // Debug Display hijacks the display to simply output text
-                char strbuff[128];
-                hardware.display.Fill(false);
-                hardware.display.SetCursor(0, 0);
-                hardware.display.WriteString("Debug:", Font_7x10, true);
-                hardware.display.SetCursor(0, 15);
-                sprintf(strbuff, "tap: %d", switchEnabledCache[1]);
-                hardware.display.WriteString(strbuff, Font_7x10, true);
-                hardware.display.SetCursor(0, 30);
-                sprintf(strbuff, "dtap: %d", switchDoubleEnabledCache[1]);
-                hardware.display.WriteString(strbuff, Font_7x10, true);
-                hardware.display.SetCursor(0, 45);
-                sprintf(strbuff, "BPM %ld", globalTempoBPM);
-                hardware.display.WriteString(strbuff, Font_7x10, true);
-                hardware.display.Update();
-            } else {
-                // Handle UI Updates for the UI System
-                guitarPedalUI.UpdateUI(elapsedTimeInSeconds);
-            }
-        }
-
-        // Handle MIDI Events
-        if (hardware.SupportsMidi() && settings.globalMidiEnabled) {
-            hardware.midi.Listen();
-
-            while (hardware.midi.HasEvents()) {
-                HandleMidiMessage(hardware.midi.PopEvent());
-            }
-        }
-
-        // Throttle persitant storage saves to once every 2 seconds:
-        if (System::GetNow() - last_save_time >= 2000) {
-            if (needToSaveSettingsForActiveEffect) {
-                uint16_t tempPreset = activeEffect->GetCurrentPreset();
-                SaveEffectSettingsToPersitantStorageForEffectID(activeEffectID, tempPreset);
-                guitarPedalUI.ShowSavingSettingsScreen();
-            }
-            storage.Save();
-            last_save_time = System::GetNow();
-            needToSaveSettingsForActiveEffect = false;
-        }
     }
 }

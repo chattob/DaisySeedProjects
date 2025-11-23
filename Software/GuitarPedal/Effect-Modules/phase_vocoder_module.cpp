@@ -1,6 +1,5 @@
-#include "crusher_module.h"
-#include "clouds/dsp/mu_law.h"
-#include <stmlib/dsp/dsp.h>
+#include "phase_vocoder_module.h"
+#include "clouds/dsp/frame.h"
 
 using namespace bkshepherd;
 
@@ -24,9 +23,9 @@ static const ParameterMetaData s_metaData[s_paramCount] = {{
                                                            };
 
 // Default Constructor
-CrusherModule::CrusherModule() : BaseEffectModule() {
+PhaseVocoderModule::PhaseVocoderModule() : BaseEffectModule() {
     // Set the name of the effect
-    m_name = "Crusher";
+    m_name = "Phase vocoder";
 
     // Setup the meta data reference for this Effect
     m_paramMetaData = s_metaData;
@@ -36,24 +35,27 @@ CrusherModule::CrusherModule() : BaseEffectModule() {
 }
 
 // Destructor
-CrusherModule::~CrusherModule() {
+PhaseVocoderModule::~PhaseVocoderModule() {
     // No Code Needed
 }
 
-void CrusherModule::ProcessMono(float in) {
-    BaseEffectModule::ProcessMono(in);
+void PhaseVocoderModule::ProcessStereo(float inL, float inR) {
+    BaseEffectModule::ProcessStereo(inL, inR);
 
     if (m_isEnabled) {
-        int16_t pcm = stmlib::Clip16(static_cast<int32_t>(in * 32768.0f));
-        uint8_t ulaw = clouds::Lin2MuLaw(pcm);      // encode to μ-law
-        int16_t decoded = clouds::MuLaw2Lin(ulaw);  // decode back to int16
-        float input = in;
-        float v = decoded / 32768.0f;               // int16 → float
-        m_audioLeft = v;
-        m_audioRight = v;
-    }
-}
+        parameters_.spectral.quantization = parameters_.texture;
+        parameters_.spectral.refresh_rate = 0.01f + 0.99f * parameters_.density;
+        float warp = parameters_.size - 0.5f;
+        parameters_.spectral.warp = 4.0f * warp * warp * warp + 0.5f;
+        
+        float randomization = parameters_.density - 0.5f;
+        randomization *= randomization * 4.2f;
+        randomization -= 0.05f;
+        CONSTRAIN(randomization, 0.0f, 1.0f);
+        parameters_.spectral.phase_randomization = randomization;
+        /*phase_vocoder_.Process(parameters_, input, output, size);
 
-void CrusherModule::ProcessStereo(float inL, float inR) {
-    ProcessMono(inL);
+        m_audioLeft = output.l;
+        m_audioRight = ouput.r;*/
+    }
 }

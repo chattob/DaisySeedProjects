@@ -3,6 +3,7 @@
 #define BASE_HARDWARE_MODULE_H /**< & */
 
 #include "daisy_seed.h"
+#include "triswitch.h"
 #include "dev/oled_ssd130x.h"
 #include <vector>
 
@@ -135,6 +136,28 @@ class BaseHardwareModule {
     */
     float GetKnobValue(int knobID);
 
+    /** Get value per On-Off-On switch.
+    \param triswitchID Which switch to get
+    \return Floating point switch position (0.0f = middle, 0.5f = left, 1.0f = right).
+    */
+    float GetTriswitchValue(int triswitchID);
+
+    /** Get value per parameter control.
+    \param ctrlID Which control to get
+    \return Floating point control position.
+    */
+    float GetParameterControlValue(int ctrlID);
+
+    /** Get number of On-Off-On Switches.
+    \return Number of Triswitches.
+    */
+    int GetTriswitchCount();
+
+    /** Get total number of controls influencing parameters.
+    \return Number of Knobs and Triswitches.
+    */
+    int GetParameterControlCount();
+    
     /** Get number of Switches.
     \return Number of Switches.
     */
@@ -188,6 +211,7 @@ class BaseHardwareModule {
     DaisySeed seed;
 
     std::vector<AnalogControl> knobs;
+    std::vector<TriSwitch> triswitches;
     std::vector<Switch> switches;
     std::vector<Encoder> encoders;
     std::vector<Led> leds;
@@ -210,6 +234,7 @@ class BaseHardwareModule {
     void SetHidUpdateRates();
 
     void InitKnobs(int count, Pin pins[]);
+    void InitTriSwitches(int count, TriPin pins[]);
     void InitSwitches(int count, Pin pins[]);
     void InitEncoders(int count, Pin pins[][3]);
     void InitLeds(int count, Pin pins[]);

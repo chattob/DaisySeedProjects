@@ -3,8 +3,8 @@
 
 using namespace bkshepherd;
 
-static const char *s_waveBinNames[5] = {"Sine", "Triangle", "Saw", "Ramp",
-                                        "Square"}; //, "Poly Tri", "Poly Saw", "Poly Sqr"};  // Horrible loud sound when switching to
+static const char *s_waveBinNames[6] = {"Sine", "Triangle", "Saw", "Ramp",
+                                        "Square", "Tape"}; //, "Poly Tri", "Poly Saw", "Poly Sqr"};  // Horrible loud sound when switching to
                                                    // poly tri, not every time, TODO whats going on? (I suspect electro smith broke
                                                    // the poly tri osc, the same happens in the tremolo too)
 static const char *s_modParamNames[4] = {"None", "DelayTime", "DelayLevel", "DelayPan"};
@@ -25,7 +25,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
-        knobMapping : 0,
+        knobMapping : -1,
         midiCCMapping : 14
     }, // mod
     {
@@ -33,7 +33,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
-        knobMapping : 1,
+        knobMapping : -1,
         midiCCMapping : 15
     },
     {
@@ -41,7 +41,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
-        knobMapping : 2,
+        knobMapping : -1,
         midiCCMapping : 16
     },
 
@@ -51,7 +51,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 3,
         valueBinNames : s_delayModes,
         defaultValue : {.uint_value = 0},
-        knobMapping : 3,
+        knobMapping : -1,
         midiCCMapping : 17
     },
     {
@@ -60,7 +60,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 6,
         valueBinNames : s_delayTypes,
         defaultValue : {.uint_value = 0},
-        knobMapping : 4,
+        knobMapping : -1,
         midiCCMapping : 18
     },
 
@@ -69,7 +69,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
-        knobMapping : 5,
+        knobMapping : -1,
         midiCCMapping : 19
     }, // mod
     {
@@ -82,7 +82,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     },
 
     {
-        name : "Mod Amt",
+        name : "Mod Amplitude",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
@@ -90,7 +90,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         midiCCMapping : 21
     },
     {
-        name : "Mod Rate",
+        name : "Mod Freq",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
@@ -109,17 +109,19 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Mod Wave",
         valueType : ParameterValueType::Binned,
-        valueBinCount : 5,
+        valueBinCount : 6,
         valueBinNames : s_waveBinNames,
         defaultValue : {.uint_value = 0},
         knobMapping : -1,
         midiCCMapping : 24
     },
-    {name : "Sync Mod F",
-     valueType : ParameterValueType::Bool,
-     defaultValue : {.uint_value = 0},
-     knobMapping : -1,
-     midiCCMapping : 25}};
+    {
+        name : "Sync Mod F",
+        valueType : ParameterValueType::Bool,
+        defaultValue : {.uint_value = 0},
+        knobMapping : -1,
+        midiCCMapping : 25
+    }};
 
 // Default Constructor
 DelayModule::DelayModule()
@@ -202,6 +204,8 @@ void DelayModule::Init(float sample_rate) {
     modOsc.Init(sample_rate);
     modOsc.SetAmp(1.0);
 
+    modTape.Init(sample_rate);
+
     CalculateDelayMix();
 }
 
@@ -235,23 +239,33 @@ void DelayModule::ParameterChanged(int parameter_id) {
 void DelayModule::ProcessModulation() {
     int modParam = (GetParameterAsBinnedValue(9) - 1);
     // Calculate Modulation
-    modOsc.SetWaveform(GetParameterAsBinnedValue(10) - 1);
-
-    if (GetParameterAsBool(11)) { // If mod frequency synced to delay time, override mod rate setting
-        float dividor;
-        if (modParam == 2 || modParam == 3) {
-            dividor = 2.0;
-        } else {
-            dividor = 4.0;
-        }
-        float freq = (effect_samplerate / delayLeft.delayTarget) / dividor;
-        modOsc.SetFreq(freq);
+    int waveForm = GetParameterAsBinnedValue(10) - 1;
+    if (waveForm == 5) {
+        float freq = GetParameterAsFloat(8);
+        float wowRate = 0.2f + 2.0f * freq;
+        float flutterRate = 2.0f + 5.0f * freq;
+        float wowDepth = 4.0f;
+        float flutterDepth = 4.0f;
+        m_currentMod = modTape.GetTapeSpeed(wowRate, flutterRate, wowDepth, flutterDepth);
     } else {
-        modOsc.SetFreq(m_modOscFreqMin + (m_modOscFreqMax - m_modOscFreqMin) * GetParameterAsFloat(8));
-    }
+        modOsc.SetWaveform(waveForm);
 
-    // Ease the effect value into it's target to avoid clipping with square or sawtooth waves
-    fonepole(m_currentMod, modOsc.Process(), .01f);
+        if (GetParameterAsBool(11)) { // If mod frequency synced to delay time, override mod rate setting
+            float dividor;
+            if (modParam == 2 || modParam == 3) {
+                dividor = 2.0;
+            } else {
+                dividor = 4.0;
+            }
+            float freq = (effect_samplerate / delayLeft.delayTarget) / dividor;
+            modOsc.SetFreq(freq);
+        } else {
+            modOsc.SetFreq(m_modOscFreqMin + (m_modOscFreqMax - m_modOscFreqMin) * GetParameterAsFloat(8));
+        }
+
+        // Ease the effect value into it's target to avoid clipping with square or sawtooth waves
+        fonepole(m_currentMod, modOsc.Process(), .01f);
+    }
     float mod = m_currentMod;
     float mod_amount = GetParameterAsFloat(7);
 
@@ -283,147 +297,151 @@ void DelayModule::ProcessModulation() {
 void DelayModule::ProcessMono(float in) {
     BaseEffectModule::ProcessMono(in);
 
-    m_LEDValue = led_osc.Process(); // update the tempo LED
+    if (m_isEnabled) {
+        m_LEDValue = led_osc.Process(); // update the tempo LED
 
-    // Calculate the effect
-    int delayType = GetParameterAsBinnedValue(4) - 1;
+        // Calculate the effect
+        int delayType = GetParameterAsBinnedValue(4) - 1;
 
-    float timeParam = GetParameterAsFloat(0);
+        float timeParam = GetParameterAsFloat(0);
 
-    delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-    delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+        delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+        delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
 
-    delayLeft.feedback = GetParameterAsFloat(1);
-    delayRight.feedback = GetParameterAsFloat(1);
-    if (delayType == 1 || delayType == 3) {
-        delayLeft.reverseMode = true;
-        delayRight.reverseMode = true;
-    } else {
-        delayLeft.reverseMode = false;
-        delayRight.reverseMode = false;
+        delayLeft.feedback = GetParameterAsFloat(1);
+        delayRight.feedback = GetParameterAsFloat(1);
+        if (delayType == 1 || delayType == 3) {
+            delayLeft.reverseMode = true;
+            delayRight.reverseMode = true;
+        } else {
+            delayLeft.reverseMode = false;
+            delayRight.reverseMode = false;
+        }
+        if (delayType == 2 || delayType == 3 || delayType == 5) {
+            delayLeft.del->setOctave(true);
+            delayRight.del->setOctave(true);
+        } else {
+            delayLeft.del->setOctave(false);
+            delayRight.del->setOctave(false);
+        }
+        if (delayType == 4 || delayType == 5) {
+            delayLeft.dual_delay = true;
+            delayRight.dual_delay = true;
+        } else {
+            delayLeft.dual_delay = false;
+            delayRight.dual_delay = false;
+        }
+
+        if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
+            delayLeft.level = GetParameterAsFloat(6) + 1.0;
+            delayRight.level = 1.0 - GetParameterAsFloat(6);
+
+            delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
+            delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
+
+        } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
+                // channel
+            delayLeft.level = 1.0;
+            delayRight.level = 1.0;
+            delayLeft.level_reverse = 1.0;
+            delayRight.level_reverse = 1.0;
+        }
+
+        // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
+        // processing?
+        ProcessModulation();
+
+        float delLeft_out = delayLeft.Process(m_audioLeft);
+        float delRight_out = delayRight.Process(m_audioRight);
+        // float delRight_out = delLeft_out;
+
+        // Calculate any delay spread
+        delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
+        float delSpread_out = delaySpread.Process(delRight_out);
+        if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
+            delRight_out = delSpread_out;
+        }
+
+        m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
+        m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
     }
-    if (delayType == 2 || delayType == 3 || delayType == 5) {
-        delayLeft.del->setOctave(true);
-        delayRight.del->setOctave(true);
-    } else {
-        delayLeft.del->setOctave(false);
-        delayRight.del->setOctave(false);
-    }
-    if (delayType == 4 || delayType == 5) {
-        delayLeft.dual_delay = true;
-        delayRight.dual_delay = true;
-    } else {
-        delayLeft.dual_delay = false;
-        delayRight.dual_delay = false;
-    }
-
-    if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
-        delayLeft.level = GetParameterAsFloat(6) + 1.0;
-        delayRight.level = 1.0 - GetParameterAsFloat(6);
-
-        delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
-        delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
-
-    } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
-             // channel
-        delayLeft.level = 1.0;
-        delayRight.level = 1.0;
-        delayLeft.level_reverse = 1.0;
-        delayRight.level_reverse = 1.0;
-    }
-
-    // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
-    // processing?
-    ProcessModulation();
-
-    float delLeft_out = delayLeft.Process(m_audioLeft);
-    float delRight_out = delayRight.Process(m_audioRight);
-    // float delRight_out = delLeft_out;
-
-    // Calculate any delay spread
-    delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
-    float delSpread_out = delaySpread.Process(delRight_out);
-    if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
-        delRight_out = delSpread_out;
-    }
-
-    m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
-    m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
 }
 
 void DelayModule::ProcessStereo(float inL, float inR) {
-    // Calculate the mono effect
     // ProcessMono(inL);
+    // Calculate the mono effect
 
-    // Do the base stereo calculation (which resets the right signal to be the inputR instead of combined mono)
     BaseEffectModule::ProcessStereo(inL, inR);
+    // Do the base stereo calculation (which resets the right signal to be the inputR instead of combined mono)
 
-    m_LEDValue = led_osc.Process(); // update the tempo LED
+    if (m_isEnabled) {
+        m_LEDValue = led_osc.Process(); // update the tempo LED
 
-    // Calculate the effect
-    int delayType = GetParameterAsBinnedValue(4) - 1;
+        // Calculate the effect
+        int delayType = GetParameterAsBinnedValue(4) - 1;
 
-    float timeParam = GetParameterAsFloat(0);
+        float timeParam = GetParameterAsFloat(0);
 
-    delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-    delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+        delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+        delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
 
-    delayLeft.feedback = GetParameterAsFloat(1);
-    delayRight.feedback = GetParameterAsFloat(1);
-    if (delayType == 1 || delayType == 3) {
-        delayLeft.reverseMode = true;
-        delayRight.reverseMode = true;
-    } else {
-        delayLeft.reverseMode = false;
-        delayRight.reverseMode = false;
+        delayLeft.feedback = GetParameterAsFloat(1);
+        delayRight.feedback = GetParameterAsFloat(1);
+        if (delayType == 1 || delayType == 3) {
+            delayLeft.reverseMode = true;
+            delayRight.reverseMode = true;
+        } else {
+            delayLeft.reverseMode = false;
+            delayRight.reverseMode = false;
+        }
+        if (delayType == 2 || delayType == 3 || delayType == 5) {
+            delayLeft.del->setOctave(true);
+            delayRight.del->setOctave(true);
+        } else {
+            delayLeft.del->setOctave(false);
+            delayRight.del->setOctave(false);
+        }
+        if (delayType == 4 || delayType == 5) {
+            delayLeft.dual_delay = true;
+            delayRight.dual_delay = true;
+        } else {
+            delayLeft.dual_delay = false;
+            delayRight.dual_delay = false;
+        }
+
+        if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
+            delayLeft.level = GetParameterAsFloat(6) + 1.0;
+            delayRight.level = 1.0 - GetParameterAsFloat(6);
+
+            delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
+            delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
+
+        } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
+                // channel
+            delayLeft.level = 1.0;
+            delayRight.level = 1.0;
+            delayLeft.level_reverse = 1.0;
+            delayRight.level_reverse = 1.0;
+        }
+
+        // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
+        // processing?
+        ProcessModulation();
+
+        float delLeft_out = delayLeft.Process(m_audioLeft);
+        float delRight_out = delayRight.Process(m_audioRight);
+        // float delRight_out = delLeft_out;
+
+        // Calculate any delay spread
+        delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
+        float delSpread_out = delaySpread.Process(delRight_out);
+        if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
+            delRight_out = delSpread_out;
+        }
+
+        m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
+        m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
     }
-    if (delayType == 2 || delayType == 3 || delayType == 5) {
-        delayLeft.del->setOctave(true);
-        delayRight.del->setOctave(true);
-    } else {
-        delayLeft.del->setOctave(false);
-        delayRight.del->setOctave(false);
-    }
-    if (delayType == 4 || delayType == 5) {
-        delayLeft.dual_delay = true;
-        delayRight.dual_delay = true;
-    } else {
-        delayLeft.dual_delay = false;
-        delayRight.dual_delay = false;
-    }
-
-    if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
-        delayLeft.level = GetParameterAsFloat(6) + 1.0;
-        delayRight.level = 1.0 - GetParameterAsFloat(6);
-
-        delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
-        delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
-
-    } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
-             // channel
-        delayLeft.level = 1.0;
-        delayRight.level = 1.0;
-        delayLeft.level_reverse = 1.0;
-        delayRight.level_reverse = 1.0;
-    }
-
-    // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
-    // processing?
-    ProcessModulation();
-
-    float delLeft_out = delayLeft.Process(m_audioLeft);
-    float delRight_out = delayRight.Process(m_audioRight);
-    // float delRight_out = delLeft_out;
-
-    // Calculate any delay spread
-    delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
-    float delSpread_out = delaySpread.Process(delRight_out);
-    if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
-        delRight_out = delSpread_out;
-    }
-
-    m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
-    m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
 }
 
 // Set the delay time from the tap tempo  TODO: Currently the tap tempo led isn't set to delay time on pedal boot up, how to do this?

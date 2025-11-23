@@ -15,7 +15,7 @@ cycfi::q::lowpass upsamplingLowpassFilter(0.0f, 48000);   // Dummy values that g
 
 constexpr uint8_t oversamplingFactor = 16;
 
-static const int s_paramCount = 6;
+static const int s_paramCount = 7;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Level",
@@ -64,6 +64,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 0,
         defaultValue : {.uint_value = 1},
         knobMapping : 5,
+        midiCCMapping : -1
+    },
+    {
+        name : "Mix",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 6,
         midiCCMapping : -1
     },
 };
@@ -241,55 +249,60 @@ void normalizeVolume(float &sample, int clippingType) {
 }
 
 void DistortionModule::ProcessMono(float in) {
-    float distorted = in;
+    BaseEffectModule::ProcessMono(in);
 
-    // Apply high-pass filter to remove excessive low frequencies
-    const float energy = std::abs(distorted);
-    preFilter.config(dynamicPreFilterCutoff(energy), GetSampleRate());
-    distorted = preFilter(distorted);
+    if (m_isEnabled) {
+        float distorted = in;
 
-    const float gain = m_gainMin + (GetParameterAsFloat(1) * (m_gainMax - m_gainMin));
-    const int clippingType = GetParameterAsBinnedValue(3) - 1;
-    const float intensity = GetParameterAsFloat(4);
+        // Apply high-pass filter to remove excessive low frequencies
+        const float energy = std::abs(distorted);
+        preFilter.config(dynamicPreFilterCutoff(energy), GetSampleRate());
+        distorted = preFilter(distorted);
 
-    // Reduce signal amplitude before clipping
-    distorted = distorted * 0.5f;
+        const float gain = m_gainMin + (GetParameterAsFloat(1) * (m_gainMax - m_gainMin));
+        const int clippingType = GetParameterAsBinnedValue(3) - 1;
+        const float intensity = GetParameterAsFloat(4);
 
-    if (m_oversampling) {
-        // Prepare signal for oversampling
-        std::vector<float> monoInput = {distorted};
-        std::vector<float> oversampledInput = upsample(monoInput, oversamplingFactor, GetSampleRate());
+        // Reduce signal amplitude before clipping
+        distorted = distorted * 0.5f;
 
-        // Apply gain and distortion processing
-        for (float &sample : oversampledInput) {
-            processDistortion(sample, gain, clippingType, intensity);
+        if (m_oversampling) {
+            // Prepare signal for oversampling
+            std::vector<float> monoInput = {distorted};
+            std::vector<float> oversampledInput = upsample(monoInput, oversamplingFactor, GetSampleRate());
+
+            // Apply gain and distortion processing
+            for (float &sample : oversampledInput) {
+                processDistortion(sample, gain, clippingType, intensity);
+
+                // Post-filter: Low-pass to smooth out harsh high frequencies
+                sample = postFilter(sample);
+            }
+
+            // Downsample back to original sample rate
+            const std::vector<float> downsampledOutput = downsample(oversampledInput, oversamplingFactor);
+            distorted = downsampledOutput[0];
+
+            // Apply gain compensation for oversampling
+            distorted *= oversamplingFactor;
+        } else {
+            processDistortion(distorted, gain, clippingType, intensity);
 
             // Post-filter: Low-pass to smooth out harsh high frequencies
-            sample = postFilter(sample);
+            distorted = postFilter(distorted);
         }
 
-        // Downsample back to original sample rate
-        const std::vector<float> downsampledOutput = downsample(oversampledInput, oversamplingFactor);
-        distorted = downsampledOutput[0];
+        // Normalize the volume between the types of distortion
+        normalizeVolume(distorted, clippingType);
 
-        // Apply gain compensation for oversampling
-        distorted *= oversamplingFactor;
-    } else {
-        processDistortion(distorted, gain, clippingType, intensity);
+        // Apply tilt-tone filter
+        const float filter_out = ProcessTiltToneControl(distorted);
 
-        // Post-filter: Low-pass to smooth out harsh high frequencies
-        distorted = postFilter(distorted);
+        const float level = m_levelMin + (GetParameterAsFloat(0) * (m_levelMax - m_levelMin));
+        float mix = GetParameterAsFloat(6);
+        m_audioLeft = (1.0f - mix) * in + mix * (filter_out * level);
+        m_audioRight = m_audioLeft;
     }
-
-    // Normalize the volume between the types of distortion
-    normalizeVolume(distorted, clippingType);
-
-    // Apply tilt-tone filter
-    const float filter_out = ProcessTiltToneControl(distorted);
-
-    const float level = m_levelMin + (GetParameterAsFloat(0) * (m_levelMax - m_levelMin));
-    m_audioLeft = filter_out * level;
-    m_audioRight = m_audioLeft;
 }
 
 void DistortionModule::ProcessStereo(float inL, float inR) {
@@ -298,7 +311,7 @@ void DistortionModule::ProcessStereo(float inL, float inR) {
 }
 
 float DistortionModule::ProcessTiltToneControl(float input) {
-    const float toneAmount = GetParameterAsFloat(2);
+    volatile const float toneAmount = GetParameterAsFloat(2);
 
     // Process input with one-pole low-pass
     const float lp = m_tone.Process(input);

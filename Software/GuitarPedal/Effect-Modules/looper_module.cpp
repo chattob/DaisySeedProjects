@@ -1,87 +1,48 @@
 #include "looper_module.h"
 
-#include "../Util/audio_utilities.h"
-
 using namespace bkshepherd;
 
-// 60 seconds at 48kHz
-#define kBuffSize 48000 * 60
+float DSY_SDRAM_BSS LooperModule::buffer_[kNumLayers][kMaxBufferSize];
 
-float DSY_SDRAM_BSS buffer[kBuffSize];
-float DSY_SDRAM_BSS bufferR[kBuffSize];
-
-static const char *s_loopModeNames[4] = {"Normal", "One-time", "Replace", "Fripp"};
-
-static const char *s_loopSpeedMode[3] = {"None", "Stepped", "Smooth"};
-
-static const int s_paramCount = 7;
+static const int s_paramCount = 4;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
-        name : "Input Level",
+        name : "Layer",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.5f},
-        knobMapping : 0,
+        defaultValue : {.float_value = 0.0f},
+        knobMapping : -1,
         midiCCMapping : 14
     },
     {
-        name : "Loop Level",
+        name : "Fading",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.5f},
-        knobMapping : 1,
+        defaultValue : {.float_value = 0.0f},
+        knobMapping : -1,
         midiCCMapping : 15
-    },
-    {
-        name : "Mode",
-        valueType : ParameterValueType::Binned,
-        valueBinCount : 4,
-        valueBinNames : s_loopModeNames,
-        defaultValue : {.uint_value = 0},
-        knobMapping : 2,
-        midiCCMapping : 16
-    },
-    {
-        name : "SpeedMode",
-        valueType : ParameterValueType::Binned,
-        valueBinCount : 3,
-        valueBinNames : s_loopSpeedMode,
-        defaultValue : {.uint_value = 0},
-        knobMapping : 3,
-        midiCCMapping : 17
     },
     {
         name : "Speed",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.5f},
-        knobMapping : 4,
-        midiCCMapping : 18,
-        minValue : -3,
-        maxValue : 3
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : -1,
+        midiCCMapping : 15
     },
     {
-        name : "LP Filter",
+        name : "Slice",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
-        knobMapping : 5,
-        midiCCMapping : 19
-    },
-    {
-        name : "MISO",
-        valueType : ParameterValueType::Bool,
-        valueBinCount : 0,
-        defaultValue : {.uint_value = 0},
         knobMapping : -1,
-        midiCCMapping : 20
+        midiCCMapping : 15
     },
 };
 
 // Default Constructor
 LooperModule::LooperModule()
-    : BaseEffectModule(), m_inputLevelMin(0.0f), m_inputLevelMax(1.0f), m_loopLevelMin(0.0f), m_loopLevelMax(1.0f),
-      m_toneFreqMin(120.0f), m_toneFreqMax(20000.0f) {
+    : BaseEffectModule() {
     // Set the name of the effect
     m_name = "Looper";
 
@@ -90,6 +51,8 @@ LooperModule::LooperModule()
 
     // Initialize Parameters for this Effect
     this->InitParams(s_paramCount);
+
+    ResetBuffer();
 }
 
 // Destructor
@@ -97,222 +60,182 @@ LooperModule::~LooperModule() {
     // No Code Needed
 }
 
-void LooperModule::Init(float sample_rate) {
-    BaseEffectModule::Init(sample_rate);
+void LooperModule::ResetBuffer() {
+    is_playing_         = false;
+    is_recording_       = false;
+    first_layer_        = true;
+    loop_length_        = 0;
+    loop_length_f_      = 0.0f;
+    mod                 = kMaxBufferSize;
 
-    // Init the looper
-    m_looper.Init(buffer, kBuffSize);
-    m_looperR.Init(bufferR, kBuffSize);
+    modifier_on_        = false;
 
-    SetLooperMode();
-    tone.Init(sample_rate);
-    toneR.Init(sample_rate);
-    currentSpeed = 1.0;
+    playing_head_.Reset();
+    recording_head_.Reset();
+
+    std::fill(&buffer_[0][0], &buffer_[0][0] + kNumLayers * kMaxBufferSize, 0.0f);
+    n_recorded_layers_ = 0;
 }
 
-void LooperModule::SetLooperMode() {
-    const int modeIndex = GetParameterAsBinnedValue(2) - 1;
-    m_looper.SetMode(static_cast<daisysp::Looper::Mode>(modeIndex));
-    m_looperR.SetMode(static_cast<daisysp::Looper::Mode>(modeIndex));
-}
-
-void LooperModule::ParameterChanged(int parameter_id) {
-    if (parameter_id == 2) {
-        SetLooperMode();
+void LooperModule::ClearTopLayers(size_t clear_from) {
+    for (int layer = clear_from; layer < n_recorded_layers_; ++layer) {
+        std::fill(&buffer_[layer][0], &buffer_[layer][0] + kMaxBufferSize, 0.0f);
     }
+    n_recorded_layers_ = std::min(n_recorded_layers_, clear_from);
+};
+
+void LooperModule::SquashLayers() {
+    for (size_t sample = 0; sample < mod; ++sample) {
+        buffer_[0][sample] += buffer_[1][sample];
+    }
+
+    for (size_t layer = 1; layer < (kNumLayers - 1); ++layer) {
+        for (size_t sample = 0; sample < mod; ++sample) {
+            buffer_[layer][sample] = buffer_[layer + 1][sample];
+        }
+    }
+
+    std::fill(&buffer_[kNumLayers - 1][0], &buffer_[kNumLayers - 1][0] + kMaxBufferSize, 0.0f);
 }
 
-void LooperModule::AlternateFootswitchPressed() {
-    m_looper.TrigRecord();
-    m_looperR.TrigRecord();
+void LooperModule::AlternateFootswitchPressed(){
+    modifier_on_ = !modifier_on_;
+    if (!modifier_on_) {
+        offset_ = 0.0f;
+        playing_head_.SyncTo(recording_head_);
+    } else {
+        offset_ = playing_head_.GetHeadPosition();
+    }
+    
 }
+
+void LooperModule::BypassFootswitchPressed(){
+    if (!is_recording_) {
+        if (n_recorded_layers_ == 0) {
+            recording_layer_ = 0;
+        } else {
+            float layer_knob_val = GetParameterAsFloat(0);
+            if (std::abs(prev_layer_knob_val_ - layer_knob_val) > 0.05f) {
+                prev_layer_knob_val_ = layer_knob_val;
+                selected_layer_ = static_cast<size_t>(std::min(layer_knob_val, 0.99f) * n_recorded_layers_);
+            }
+            size_t target_layer = std::min<size_t>(selected_layer_ + 1, kNumLayers - 1);
+            ClearTopLayers(target_layer);
+            recording_layer_ = target_layer;
+        }
+
+        is_recording_ = true;
+        is_playing_ = true;
+        prev_wrap_around_count_ = recording_head_.GetWrapAroundCount();
+    } else {
+        n_recorded_layers_ = std::min(static_cast<uint8_t>(recording_layer_ + 1), static_cast<uint8_t>(kNumLayers));
+        if (recording_layer_ == (kNumLayers - 1)) {
+            SquashLayers();
+        }
+
+        is_recording_ = false;
+        is_playing_ = true;
+        recording_layer_ = 0;
+
+        if (first_layer_) {
+            selected_layer_ = 0;
+            first_layer_ = false;
+            mod = loop_length_;
+            loop_length_ = 0;
+        } else {
+            selected_layer_++;
+        }
+    }
+};
 
 void LooperModule::AlternateFootswitchHeldFor1Second() {
-    // clear the loop
-    m_looper.Clear();
-    m_looperR.Clear();
-}
+    ResetBuffer();
+};
 
-void LooperModule::ProcessMono(float in) {
-    BaseEffectModule::ProcessMono(in);
+void LooperModule::WriteBuffer(float in)
+{
+    float recording_head_position_f = recording_head_.GetHeadPosition();
+    float playing_head_position_f = playing_head_.GetHeadPosition();
+    size_t recording_index = static_cast<size_t>(recording_head_position_f);
+    size_t playing_index = static_cast<size_t>(playing_head_position_f);
 
-    const float inputLevel = m_inputLevelMin + (GetParameterAsFloat(0) * (m_inputLevelMax - m_inputLevelMin));
+    buffer_[recording_layer_][recording_index] +=  in;
 
-    const float loopLevel = m_loopLevelMin + (GetParameterAsFloat(1) * (m_loopLevelMax - m_loopLevelMin));
-
-    float input = in * inputLevel;
-
-    // Set low pass filter as exponential taper
-    tone.SetFreq(m_toneFreqMin + GetParameterAsFloat(5) * GetParameterAsFloat(5) * (m_toneFreqMax - m_toneFreqMin));
-
-    // Handle speed and direction changes smoothly (like a tape reel)
-    // TODO maybe move out to only do this when speed param changes
-    int speedModeIndex = GetParameterAsBinnedValue(3) - 1;
-
-    if (speedModeIndex == 2) {
-        float speed = GetParameterAsFloat(4);
-        daisysp::fonepole(currentSpeed, speed, .00006f);
-        if (currentSpeed < 0.0) {
-            m_looper.SetReverse(true);
-        } else {
-            m_looper.SetReverse(false);
-        }
-        float speed_input_abs = abs(currentSpeed);
-        m_looper.SetIncrementSize(speed_input_abs);
-
-    } else if (speedModeIndex == 1) {
-        float speed = GetParameterAsFloat(4) * 2;
-        int temp_speed = speed;
-        float ftemp_speed = temp_speed;
-        float stepped_speed = ftemp_speed / 2;
-
-        if (speed < 0.0) {
-            m_looper.SetReverse(true);
-        } else {
-            m_looper.SetReverse(false);
-        }
-        float speed_input_abs = abs(stepped_speed);
-        if (speed_input_abs < 0.5) {
-            speed_input_abs = 0.5;
-        }
-        m_looper.SetIncrementSize(speed_input_abs);
-
-    } else {
-        m_looper.SetReverse(false);
-        m_looper.SetIncrementSize(1.0);
+    if (first_layer_) {
+        loop_length_++;
     }
-    /////////////////////////
-
-    // store signal = loop signal * loop gain + in * in_gain
-    float looperOutput = m_looper.Process(input) * loopLevel + input;
-    float filter_out = tone.Process(looperOutput); // Apply tone Low Pass filter (useful to tame aliasing noise on variable speeds)
-
-    m_audioRight = m_audioLeft = filter_out;
-}
+};
 
 void LooperModule::ProcessStereo(float inL, float inR) {
-    // Calculate the mono effect
-    // ProcessMono(inL);
-
-    BaseEffectModule::ProcessStereo(inL, inR);
-
-    const float inputLevel = m_inputLevelMin + (GetParameterAsFloat(0) * (m_inputLevelMax - m_inputLevelMin));
-
-    const float loopLevel = m_loopLevelMin + (GetParameterAsFloat(1) * (m_loopLevelMax - m_loopLevelMin));
-
-    float inputR = 0.0;
-    float input = m_audioLeft * inputLevel;
-    if (!GetParameterAsBool(6)) { // If "MISO" is on, copy left input to right, otherwise do true stereo
-        inputR = m_audioRight * inputLevel;
-    } else {
-        inputR = input;
+    float fading = 1.0f - GetParameterAsFloat(1);
+    float speed = 1.0f;
+    float slice = 1.0f;
+    
+    if (modifier_on_) {
+        speed = 4.0f * (GetParameterAsFloat(2) - 0.5f);
+        slice = std::max(0.01f, GetParameterAsFloat(3));
     }
 
-    // Set low pass filter as exponential taper
-    tone.SetFreq(m_toneFreqMin + GetParameterAsFloat(5) * GetParameterAsFloat(5) * (m_toneFreqMax - m_toneFreqMin));
-    toneR.SetFreq(m_toneFreqMin + GetParameterAsFloat(5) * GetParameterAsFloat(5) * (m_toneFreqMax - m_toneFreqMin));
+    //automatic looptime
+    /*if(loop_length_ >= kMaxBufferSize)
+    {
+        first_layer_ = false;
+        mod = kMaxBufferSize;
+        loop_length_   = 0;
+    }*/
 
-    // Handle speed and direction changes smoothly (like a tape reel)
-    // TODO maybe move out to only do this when speed param changes
-    int speedModeIndex = GetParameterAsBinnedValue(3) - 1;
-
-    if (speedModeIndex == 2) {
-        float speed = GetParameterAsFloat(4);
-        daisysp::fonepole(currentSpeed, speed, .00006f);
-        if (currentSpeed < 0.0) {
-            m_looper.SetReverse(true);
-            m_looperR.SetReverse(true);
-        } else {
-            m_looper.SetReverse(false);
-            m_looperR.SetReverse(false);
+    /*if (one_pass_recording_) {
+        uint16_t curr_wrap_around_count = recording_head_.GetWrapAroundCount();
+        if (curr_wrap_around_count != prev_wrap_around_count_) {
+            StopRecording();
         }
-        float speed_input_abs = abs(currentSpeed);
-        m_looper.SetIncrementSize(speed_input_abs);
-        m_looperR.SetIncrementSize(speed_input_abs);
+        prev_wrap_around_count_ = curr_wrap_around_count;
+    }*/
 
-    } else if (speedModeIndex == 1) {
-        float speed = GetParameterAsFloat(4) * 2;
-        int temp_speed = speed;
-        float ftemp_speed = temp_speed;
-        float stepped_speed = ftemp_speed / 2;
-
-        if (speed < 0.0) {
-            m_looper.SetReverse(true);
-            m_looperR.SetReverse(true);
-        } else {
-            m_looper.SetReverse(false);
-            m_looperR.SetReverse(false);
-        }
-        float speed_input_abs = abs(stepped_speed);
-        if (speed_input_abs < 0.5) {
-            speed_input_abs = 0.5;
-        }
-        m_looper.SetIncrementSize(speed_input_abs);
-        m_looperR.SetIncrementSize(speed_input_abs);
-
-    } else {
-        m_looper.SetReverse(false);
-        m_looper.SetIncrementSize(1.0);
-        m_looperR.SetReverse(false);
-        m_looperR.SetIncrementSize(1.0);
+    if (is_playing_) {
+        playing_head_.SetSpeed(speed);
+        playing_head_.UpdatePosition(first_layer_, mod, slice, offset_);
+        recording_head_.UpdatePosition(first_layer_, mod);
     }
-    /////////////////////////
 
-    // store signal = loop signal * loop gain + in * in_gain
-    float looperOutput = m_looper.Process(input) * loopLevel + input;
-    float filter_out = tone.Process(looperOutput); // Apply tone Low Pass filter (useful to tame aliasing noise on variable speeds)
+    float playing_head_position_f = playing_head_.GetHeadPosition();
+    size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
-    float looperOutputR = m_looperR.Process(inputR) * loopLevel + inputR;
-    float filter_outR = toneR.Process(looperOutputR); // Apply tone Low Pass filter (useful to tame aliasing noise on variable speeds)
+    float recording_head_position_f = recording_head_.GetHeadPosition();
+    size_t recording_head_position = static_cast<size_t>(recording_head_position_f);
 
-    m_audioLeft = filter_out;
-    m_audioRight = filter_outR;
+    m_audioLeft = 0.0f;
+
+    float layer_knob_val = GetParameterAsFloat(0);
+    if (std::abs(layer_knob_val - prev_layer_knob_val_) > 0.05f) {
+        prev_layer_knob_val_ = layer_knob_val;
+        selected_layer_ = static_cast<size_t>(layer_knob_val * n_recorded_layers_);
+    }
+    
+    for(size_t l = 0; l <= (is_recording_ ? recording_layer_ : selected_layer_); ++l) {
+        m_audioLeft += buffer_[l][playing_head_position];
+    }
+
+    if (is_recording_) {
+        for(int l = 0; l <= recording_layer_; ++l) {
+            buffer_[l][recording_head_position] = buffer_[l][recording_head_position] * fading;
+        }
+    }
+    
+    m_audioLeft = m_audioLeft + inL;
+
+    if (is_recording_) {
+        WriteBuffer(inL);
+    }
 }
 
 float LooperModule::GetBrightnessForLED(int led_id) const {
-    float value = BaseEffectModule::GetBrightnessForLED(led_id);
-
-    if (led_id == 1) {
-        // Enable the LED if the looper is recording
-        return value * m_looper.Recording();
-    }
-
-    return value;
-}
-
-void LooperModule::DrawUI(OneBitGraphicsDisplay &display, int currentIndex, int numItemsTotal, Rectangle boundsToDrawIn,
-                          bool isEditing) {
-    BaseEffectModule::DrawUI(display, currentIndex, numItemsTotal, boundsToDrawIn, isEditing);
-
-    int width = boundsToDrawIn.GetWidth();
-
-    if (m_looper.GetRecSize() > 0) {
-        float percentageDone = 100.0 * (m_looper.GetPos() / m_looper.GetRecSize());
-        int numBlocks = 20;
-        int blockWidth = width / numBlocks;
-        int top = 30;
-        int x = 0;
-        for (int block = 0; block < numBlocks; block++) {
-            Rectangle r(x, top, blockWidth, blockWidth);
-
-            bool active = false;
-            if ((static_cast<float>(block) / static_cast<float>(numBlocks) * 100.0f) <= percentageDone) {
-                active = true;
-            }
-            display.DrawRect(r, true, active);
-            x += blockWidth;
-        }
-
-        char strbuff[64];
-        if (m_looper.Recording()) {
-            sprintf(strbuff, "R " FLT_FMT(1), FLT_VAR(1, percentageDone));
-        } else {
-            sprintf(strbuff, FLT_FMT(1), FLT_VAR(1, percentageDone));
-        }
-        display.WriteStringAligned(strbuff, Font_11x18, boundsToDrawIn, Alignment::bottomCentered, true);
+    float led_brightness;
+    
+    if (led_id == 0) {
+        led_brightness = is_recording_ ? 1.0f : 0.0f;
     } else {
-        char strbuff[64];
-        sprintf(strbuff, "Empty");
-        display.WriteStringAligned(strbuff, Font_11x18, boundsToDrawIn, Alignment::bottomCentered, true);
+        led_brightness = modifier_on_ ? 1.0f : 0.0f;
     }
+    return led_brightness;
 }

@@ -74,6 +74,12 @@ void BaseHardwareModule::ProcessAnalogControls() {
 }
 
 void BaseHardwareModule::ProcessDigitalControls() {
+    if (!triswitches.empty()) {
+        for (int i = 0; i < GetTriswitchCount(); i++) {
+            triswitches[i].Debounce();
+        }
+    }
+    
     if (!switches.empty()) {
         for (int i = 0; i < GetSwitchCount(); i++) {
             switches[i].Debounce();
@@ -100,6 +106,26 @@ float BaseHardwareModule::GetKnobValue(int knobID) {
 
     return 0.0f;
 }
+
+float BaseHardwareModule::GetTriswitchValue(int triswitchID) {
+    if (!triswitches.empty() && triswitchID >= 0 && triswitchID < GetTriswitchCount()) {
+        return triswitches[triswitchID].Value();
+    }
+
+    return 0.5f; //Triswitch middle position.
+}
+
+float BaseHardwareModule::GetParameterControlValue(int ctrlID) {
+    if(ctrlID < GetKnobCount()) {
+        return GetKnobValue(ctrlID);
+    }
+    ctrlID -= GetKnobCount();
+    return GetTriswitchValue(ctrlID);  
+}
+
+int BaseHardwareModule::GetTriswitchCount() { return triswitches.size(); }
+
+int BaseHardwareModule::GetParameterControlCount() { return (knobs.size() + triswitches.size());}
 
 int BaseHardwareModule::GetSwitchCount() { return switches.size(); }
 
@@ -171,6 +197,7 @@ void BaseHardwareModule::InitKnobs(int count, Pin pins[]) {
     seed.adc.Init(cfg, count);
 
     // Setup the Knobs
+    knobs.reserve(count);
     for (int i = 0; i < count; i++) {
         AnalogControl myKnob;
         myKnob.Init(seed.adc.GetPtr(i), AudioCallbackRate());
@@ -178,7 +205,17 @@ void BaseHardwareModule::InitKnobs(int count, Pin pins[]) {
     }
 }
 
+void BaseHardwareModule::InitTriSwitches(int count, TriPin pins[]) {
+    triswitches.reserve(count);
+    for (int i = 0; i < count; i++) {
+        TriSwitch myTriswitch;
+        myTriswitch.Init(pins[i]);
+        triswitches.push_back(myTriswitch);
+    }
+}
+
 void BaseHardwareModule::InitSwitches(int count, Pin pins[]) {
+    switches.reserve(count);
     for (int i = 0; i < count; i++) {
         Switch mySwitch;
         mySwitch.Init(pins[i]);

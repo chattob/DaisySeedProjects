@@ -2,7 +2,7 @@
 
 using namespace bkshepherd;
 
-static const int s_switchParamCount = 2;
+static const int s_switchParamCount = 8;
 static const PreferredSwitchMetaData s_switchMetaData[s_switchParamCount] = {
     {sfType : SpecialFunctionType::Bypass, switchMapping : 0}, {sfType : SpecialFunctionType::Alternate, switchMapping : 1}};
 
@@ -22,16 +22,19 @@ void GuitarPedal125B::Init(size_t blockSize, bool boost) {
     Pin knobPins[] = {seed::D15, seed::D16, seed::D17, seed::D18, seed::D19, seed::D20};
     InitKnobs(6, knobPins);
 
-    Pin switchPins[] = {seed::D6, seed::D5};
-    InitSwitches(2, switchPins);
+    TriPin tri_pins[] = {
+        {seed::D13,  seed::D14},
+        {seed::D11, seed::D12},
+        {seed::D9, seed::D10},
+    };
+    InitTriSwitches(3, tri_pins);
 
-    Pin encoderPins[][3] = {{seed::D3, seed::D2, seed::D4}};
-    InitEncoders(1, encoderPins);
+    Pin switchPins[] = {seed::D7, seed::D8};
+    InitSwitches(2, switchPins);
 
     Pin ledPins[] = {seed::D22, seed::D23};
     InitLeds(2, ledPins);
 
     InitMidi(seed::D30, seed::D29);
-    InitDisplay(seed::D9, seed::D11);
-    InitTrueBypass(seed::D1, seed::D12);
+    InitTrueBypass(seed::D0, seed::D25);
 }

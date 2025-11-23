@@ -5,6 +5,7 @@
 #include "Delays/delayline_reverse.h"
 #include "Delays/delayline_revoct.h"
 #include "base_effect_module.h"
+#include "../Util/tape_modulator.h"
 #include "daisysp.h"
 #include <stdint.h>
 #ifdef __cplusplus
@@ -118,6 +119,22 @@ class DelayModule : public BaseEffectModule {
     DelayModule();
     ~DelayModule();
 
+    enum Param {
+        DELAY_TIME = 0,
+        D_FEEDBACK,
+        DELAY_MIX,
+        DELAY_MODE,
+        DELAY_TYPE,
+        DELAY_LPF,
+        D_SPREAD,
+        MOD_AMPLITUDE,
+        MOD_FREQ,
+        MOD_PARAM,
+        MOD_WAVE,
+        SYNC_MOD_F,
+        PARAM_COUNT
+    };
+
     void Init(float sample_rate) override;
     void UpdateLEDRate();
     void CalculateDelayMix();
@@ -141,6 +158,8 @@ class DelayModule : public BaseEffectModule {
     Oscillator modOsc;
     float m_modOscFreqMin;
     float m_modOscFreqMax;
+
+    TapeModulator modTape;
 
     // Delays
     delayRevOct delayLeft;

@@ -4,6 +4,7 @@
 
 #include "daisy_seed.h"
 #include <stdint.h>
+
 #ifdef __cplusplus
 
 /** @file base_effect_module.h */
@@ -228,6 +229,10 @@ class BaseEffectModule {
     */
     virtual void ProcessStereo(float inL, float inR);
 
+    /** Used to exectute polling operations in the main.
+    */
+    virtual bool Poll();
+
     /**  Gets the most recently calculated Sample Value for the Left Stereo Channel (or Mono)
      \return Last floating point sample for the left channel.
     */
@@ -308,6 +313,13 @@ class BaseEffectModule {
     /** Overridable callback when alternate footswitch is held for 1 second */
     virtual void AlternateFootswitchHeldFor1Second(){};
 
+    /** Overridable callback when main footswitch is pressed */
+    virtual void BypassFootswitchPressed();
+    /** Overridable callback when main footswitch is released */
+    virtual void BypassFootswitchReleased(){};
+    /** Overridable callback when main footswitch is held for 1 second */
+    virtual void BypassFootswitchHeldFor1Second(){};
+
     void SetCPUUsage(float cpuUsage) { m_cpuUsage = cpuUsage; };
     float GetCPUUsage() const { return m_cpuUsage; }
 
@@ -335,7 +347,7 @@ class BaseEffectModule {
     float m_audioLeft;                        // Last Audio Sample value for the Left Stereo Channel (or Mono)
     float m_audioRight;                       // Last Audio Sample value for the Right Stereo Channel
     uint32_t m_settingsArrayStartIdx;         // Start index of settings persistent storage struct
-  private:
+  protected:
     bool m_isEnabled;
     float m_sampleRate; // Current Sample Rate this Effect was initialized for.
     float m_cpuUsage;   // CPU usage of the audio callback, can be used for rendering to display
