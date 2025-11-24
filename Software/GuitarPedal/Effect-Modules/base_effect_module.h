@@ -223,11 +223,13 @@ class BaseEffectModule {
      call ProcessStereo too. \param in Input sample.
     */
     virtual void ProcessMono(float in);
+    virtual void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size);
 
     /** Processes the Effect in Stereo for a single left & right sample.  This should only be called once per sample. Also, if this is
      called, don't call ProcessMono too. \param inL, inR Input sample Left and Right.
     */
     virtual void ProcessStereo(float inL, float inR);
+    virtual void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size);
 
     /** Used to exectute polling operations in the main.
     */

@@ -6,7 +6,6 @@
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/looper_module.h"
 #include "Effect-Modules/distortion_module.h"
-#include "Effect-Modules/crusher_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -15,6 +14,7 @@ using namespace daisysp;
 using namespace bkshepherd;
 
 GuitarPedal125B hardware;
+constexpr size_t kBlockSize = 48;
 
 // Effect Related Variables
 std::vector<BaseEffectModule*> effectChain;
@@ -278,12 +278,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 
     // Handle Effect State being Toggled.
     if (effectOn != oldEffectOn) {
-        // Set the stats on the effect
-        for (auto* effect : effectChain) {
-            if (!effect) continue;
-            effect->SetEnabled(effectOn);
-        }
-
         // Setup the crossfade
         isCrossFading = true;
         samplesTilCrossFadingComplete = crossFaderTransitionTimeInSamples;
@@ -297,6 +291,25 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
             // Set the timing for when the bypass relay should trigger and when to unmute.
             samplesTilMuteOff = muteOffTransitionTimeInSamples;
             samplesTilBypassToggle = bypassToggleTransitionTimeInSamples;
+        }
+    }
+
+    float crossFadeTargetBuffer[2][kBlockSize];   // actual audio data
+    float* crossFadeTarget[2] = { crossFadeTargetBuffer[0], crossFadeTargetBuffer[1] }; // pointers
+
+    for (size_t i = 0; i < size; i++) {
+        crossFadeTarget[0][i] = in[0][i];
+        crossFadeTarget[1][i] = in[1][i];
+    }
+
+    if (!effectChain.empty() && (effectOn || isCrossFading)) {
+        for (auto* fx : effectChain) {
+            if (!fx) continue;
+            if (hardware.SupportsStereo()) {
+                fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+            } else {
+                fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+            }
         }
     }
 
@@ -347,7 +360,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         float wl = inputLeft;
         float wr = inputRight;
 
-        if (!effectChain.empty() && (effectOn || isCrossFading)) {
+        /*if (!effectChain.empty() && (effectOn || isCrossFading)) {
             for (auto* fx : effectChain) {
                 if (!fx) continue;
                 if (hardware.SupportsStereo()) {
@@ -362,17 +375,19 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
 
         crossFadeTargetLeft  = wl;
-        crossFadeTargetRight = wr;
+        crossFadeTargetRight = wr;*/
+        crossFadeTargetLeft  = crossFadeTarget[0][i];
+        crossFadeTargetRight = crossFadeTarget[1][i];
 
         out[0][i] = crossFaderLeft.Process(crossFadeSourceLeft, crossFadeTargetLeft);
-        out[1][i] = crossFaderRight.Process(crossFadeSourceRight, crossFadeTargetRight);
-
-        // Update state of the LEDs
-        if (auto* effect = First()) {
-            led1Brightness = effect->GetBrightnessForLED(0);
-            led2Brightness = effect->GetBrightnessForLED(1);
-        }   
+        out[1][i] = crossFaderRight.Process(crossFadeSourceRight, crossFadeTargetRight);  
     }
+
+    // Update state of the LEDs
+    if (auto* effect = First()) {
+        led1Brightness = effect->GetBrightnessForLED(0);
+        led2Brightness = effect->GetBrightnessForLED(1);
+    } 
 
     // Handle LEDs
     hardware.SetLed(0, led1Brightness);
@@ -386,15 +401,14 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 //                               MAIN SECTION
 //======================================================================
 int main(void) {
-    const size_t blockSize = 48;
     const bool boost = false; // true enables cpu boost (480Mhz instead of 400Mhz)
 
-    hardware.Init(blockSize, boost);
+    hardware.Init(kBlockSize, boost);
 
     const float sample_rate = hardware.AudioSampleRate();
 
     // Setup CPU logging of the audio callback
-    cpuLoadMeter.Init(sample_rate, blockSize);
+    cpuLoadMeter.Init(sample_rate, kBlockSize);
 
     // Set the number of samples to use for the crossfade based on the hardware sample rate
     muteOffTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(muteOffTransitionTimeInSeconds);
@@ -404,7 +418,6 @@ int main(void) {
     auto* looper = new LooperModule();
     auto* delay  = new DelayModule();
     auto* distortion  = new DistortionModule();
-    auto* crusher = new CrusherModule();
 
     // Fix some effect parameters
     // delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
@@ -420,10 +433,13 @@ int main(void) {
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
-    //effectChain.push_back(looper);
+    looper->SetEnabled(true);
+    delay->SetEnabled(false);
+    distortion->SetEnabled(false);
+
+    effectChain.push_back(looper);
     effectChain.push_back(delay);
-    //effectChain.push_back(distortion);
-    effectChain.push_back(crusher);
+    effectChain.push_back(distortion);
     
     for (auto* effect : effectChain) {
         effect->Init(sample_rate);
@@ -478,7 +494,6 @@ int main(void) {
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
     switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
-    switchRoutes[bypassSwitchID].push_back({crusher, SwitchAction::BypassPressed});
 
     // Main/bypass footswitch
     switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
