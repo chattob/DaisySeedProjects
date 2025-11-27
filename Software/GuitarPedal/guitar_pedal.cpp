@@ -6,6 +6,7 @@
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/looper_module.h"
 #include "Effect-Modules/distortion_module.h"
+#include "Effect-Modules/pitch_shifter_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -43,17 +44,15 @@ bool knobValuesInitialized = false;
 float knobValueDeadZone = 0.05f; // Dead zone on both ends of the raw knob range
 float knobValueChangeTolerance = 1.0f / 256.0f;
 float knobValueIdleTimeInSeconds = 1.0f;
-int knobValueIdleTimeInSamples;
 volatile bool *knobValueCacheChanged = nullptr;
 float *knobValueCache = nullptr;
-int *knobValueSamplesTilIdle = nullptr;
+float *knobValueTimeTilIdle = nullptr;
 
 // Switch Monitoring Variables
 float switchEnabledIdleTimeInSeconds = 2.0f;
-int switchEnabledIdleTimeInSamples;
 bool *switchEnabledCache = nullptr;
 bool *switchDoubleEnabledCache = nullptr;
-int *switchEnabledSamplesTilIdle = nullptr;
+float *switchEnabledTimeTilIdle = nullptr;
 bool *switchesHeldFired = nullptr;
 
 // Tempo
@@ -118,57 +117,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     float led1Brightness = 0.0f;
     float led2Brightness = 0.0f;
 
-    // Handle Inputs
-    hardware.ProcessAnalogControls();
-    hardware.ProcessDigitalControls();
-
-    // Process the Pots
-    float knobValueRaw;
-
-    for (int i = 0; i < hardware.GetParameterControlCount(); i++) {
-        knobValueRaw = hardware.GetParameterControlValue(i);
-
-        // Knobs don't perfectly return values in the 0.0f - 1.0f range
-        // so we will add some deadzone to either end of the knob and remap values into
-        // a full 0.0f - 1.0f range.
-        if (knobValueRaw < knobValueDeadZone) {
-            knobValueRaw = 0.0f;
-        } else if (knobValueRaw > (1.0f - knobValueDeadZone)) {
-            knobValueRaw = 1.0f;
-        } else {
-            knobValueRaw = (knobValueRaw - knobValueDeadZone) / (1.0f - (2.0f * knobValueDeadZone));
-        }
-
-        if (!knobValuesInitialized) {
-            // Initialize the knobs for the first time to whatever the current knob placements are
-            knobValueCacheChanged[i] = true;
-            knobValueSamplesTilIdle[i] = 0;
-            knobValueCache[i] = knobValueRaw;
-        } else {
-            // If the knobs are initialized handle monitor them for changes.
-            if (knobValueSamplesTilIdle[i] > 0) {
-                knobValueSamplesTilIdle[i] -= size;
-
-                if (knobValueSamplesTilIdle[i] <= 0) {
-                    knobValueSamplesTilIdle[i] = 0;
-                    knobValueCacheChanged[i] = false;
-                }
-            }
-
-            bool knobValueChangedToleranceMet = false;
-
-            if (knobValueRaw > (knobValueCache[i] + knobValueChangeTolerance) ||
-                knobValueRaw < (knobValueCache[i] - knobValueChangeTolerance)) {
-                knobValueChangedToleranceMet = true;
-                knobValueCacheChanged[i] = true;
-                knobValueSamplesTilIdle[i] = knobValueIdleTimeInSamples;
-            }
-
-            if (knobValueChangedToleranceMet || knobValueCacheChanged[i]) {
-                knobValueCache[i] = knobValueRaw;
-            }
-        }
-    }
 
     // Store the previous value of the effect bypass so that we can determine if
     // we need to perform a toggle at the end of processing the switches
@@ -176,96 +124,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 
     // For looper, we force effect ON. Remove this line for bypassable effects.
     effectOn = true;
-
-    // Process the switches
-    for (int sw = 0; sw < hardware.GetSwitchCount(); ++sw) {
-        bool switchPressed  = hardware.switches[sw].RisingEdge();
-        bool switchReleased = hardware.switches[sw].FallingEdge();
-        bool switchHeld  = hardware.switches[sw].TimeHeldMs() >= 1000.f;
-
-        // Dispatch all routes for this switch
-        for (const auto &r : switchRoutes[sw]) {
-            if (!r.effect) continue;
-
-            switch (r.action) {
-                // SHORT PRESS -> fire on RisingEdge
-                case SwitchAction::AltPressed:
-                    if (switchPressed) {
-                        r.effect->AlternateFootswitchPressed();
-                    }
-                    break;
-
-                case SwitchAction::BypassPressed:
-                    if (switchPressed) {
-                        r.effect->BypassFootswitchPressed();
-                    }
-                    break;
-
-                // RELEASE -> fire on FallingEdge (also clear held-guard)
-                case SwitchAction::AltReleased:
-                    if (switchReleased) {
-                        r.effect->AlternateFootswitchReleased();
-
-                        // Reset held flag so future holds can fire
-                        switchesHeldFired[sw] = false;
-                    }
-                    break;
-
-                case SwitchAction::BypassReleased:
-                    if (switchReleased) {
-                        r.effect->BypassFootswitchReleased();
-
-                        // Reset held flag so future holds can fire
-                        switchesHeldFired[sw] = false;
-                    }
-                    break;
-
-                // HELD (1s) -> fire once when hold threshold reached, guarded by switchesHeldFired
-                case SwitchAction::AltHeld1s:
-                    if (switchHeld && !switchesHeldFired[sw]) {
-                        r.effect->AlternateFootswitchHeldFor1Second();
-                        switchesHeldFired[sw] = true; // prevent repeated calls until release
-                    }
-                    break;
-
-                case SwitchAction::BypassHeld1s:
-                    if (switchHeld && !switchesHeldFired[sw]) {
-                        r.effect->BypassFootswitchHeldFor1Second();
-                        switchesHeldFired[sw] = true; // prevent repeated calls until release
-                    }
-                    break;
-            }
-        }
-
-        // Ensure the held-flag is cleared if user releases the button without any 'Released' route mapped
-        // (keeps held-guard consistent even if no route calls reset it)
-        if (switchReleased) {switchesHeldFired[sw] = false;}
-
-        if (switchEnabledCache[sw] == true) {
-            switchEnabledSamplesTilIdle[sw] -= size;
-
-            if (switchEnabledSamplesTilIdle[sw] <= 0) {
-                switchEnabledCache[sw] = false;
-
-                if (switchDoubleEnabledCache[sw] != true) {
-                    // We can safely know this was only a single tap here.
-                }
-
-                switchDoubleEnabledCache[sw] = false;
-            }
-        }
-
-        if (switchPressed) {
-            // Note that switch is pressed and reset the IdleTimer for detecting double presses
-            switchEnabledCache[sw] = switchPressed;
-
-            if (switchEnabledSamplesTilIdle[sw] > 0) {
-                switchDoubleEnabledCache[sw] = true;
-            }
-
-            switchEnabledSamplesTilIdle[sw] = switchEnabledIdleTimeInSamples;
-        }
-    }
 
     // Handle updating the Hardware Bypass & Muting signals
     if (hardware.SupportsTrueBypass()) {
@@ -305,6 +163,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     if (!effectChain.empty() && (effectOn || isCrossFading)) {
         for (auto* fx : effectChain) {
             if (!fx) continue;
+            if (!fx->IsEnabled()) continue;
             if (hardware.SupportsStereo()) {
                 fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
             } else {
@@ -357,25 +216,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         float crossFadeTargetLeft  = inputLeft;
         float crossFadeTargetRight = inputRight;
 
-        float wl = inputLeft;
-        float wr = inputRight;
-
-        /*if (!effectChain.empty() && (effectOn || isCrossFading)) {
-            for (auto* fx : effectChain) {
-                if (!fx) continue;
-                if (hardware.SupportsStereo()) {
-                    fx->ProcessStereo(wl, wr);
-                } else {
-                    fx->ProcessMono(wl);
-                    // wr = wl; // only if your mono effects don’t set both outputs
-                }
-                wl = fx->GetAudioLeft();
-                wr = fx->GetAudioRight();
-            }
-        }
-
-        crossFadeTargetLeft  = wl;
-        crossFadeTargetRight = wr;*/
         crossFadeTargetLeft  = crossFadeTarget[0][i];
         crossFadeTargetRight = crossFadeTarget[1][i];
 
@@ -418,6 +258,7 @@ int main(void) {
     auto* looper = new LooperModule();
     auto* delay  = new DelayModule();
     auto* distortion  = new DistortionModule();
+    auto* pitch_shifter = new PitchShifterModule();
 
     // Fix some effect parameters
     // delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
@@ -436,10 +277,12 @@ int main(void) {
     looper->SetEnabled(true);
     delay->SetEnabled(false);
     distortion->SetEnabled(false);
+    pitch_shifter->SetEnabled(false);
 
     effectChain.push_back(looper);
     effectChain.push_back(delay);
-    effectChain.push_back(distortion);
+    //effectChain.push_back(distortion);
+    //effectChain.push_back(pitch_shifter);
     
     for (auto* effect : effectChain) {
         effect->Init(sample_rate);
@@ -482,6 +325,12 @@ int main(void) {
     knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY});
     knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});
     */
+    knobRoutes[0].push_back({pitch_shifter, PitchShifterModule::SEMITONE});
+    knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
+    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
+    knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
+    knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
+    knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});
 
     // 1: layers, 2: fading, 3: stability/bitcrusher, 4: slice/stretch, 5: speed/pitch, 6: distortion
     // A: single/all/direct B:fixed/flex C:
@@ -494,6 +343,7 @@ int main(void) {
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
     switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
+    switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
 
     // Main/bypass footswitch
     switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
@@ -506,20 +356,18 @@ int main(void) {
     // Init the Knob Monitoring System
     knobValueCacheChanged = new bool[hardware.GetParameterControlCount()];
     knobValueCache = new float[hardware.GetParameterControlCount()];
-    knobValueSamplesTilIdle = new int[hardware.GetParameterControlCount()];
-    knobValueIdleTimeInSamples = hardware.GetNumberOfSamplesForTime(knobValueIdleTimeInSeconds);
+    knobValueTimeTilIdle = new float[hardware.GetParameterControlCount()];
 
     // Init the Switch Monitoring System
     switchEnabledCache = new bool[hardware.GetSwitchCount()];
     switchDoubleEnabledCache = new bool[hardware.GetSwitchCount()];
-    switchEnabledSamplesTilIdle = new int[hardware.GetSwitchCount()];
+    switchEnabledTimeTilIdle = new float[hardware.GetSwitchCount()];
     switchesHeldFired = new bool[hardware.GetSwitchCount()];
-    switchEnabledIdleTimeInSamples = hardware.GetNumberOfSamplesForTime(switchEnabledIdleTimeInSeconds);
 
     for (int i = 0; i < hardware.GetSwitchCount(); i++) {
         switchEnabledCache[i] = false;
         switchDoubleEnabledCache[i] = false;
-        switchEnabledSamplesTilIdle[i] = 0;
+        switchEnabledTimeTilIdle[i] = 0;
         switchesHeldFired[i] = false;
     }
 
@@ -542,6 +390,10 @@ int main(void) {
     while (1) {
         // Handle Clock Time
         uint32_t currentTimeStampUS = System::GetUs();
+        volatile bool frozen;
+        if (currentTimeStampUS == lastTimeStampUS) {
+            frozen = true;
+        }
         uint32_t elapsedTimeStampUS = currentTimeStampUS - lastTimeStampUS;
         lastTimeStampUS = currentTimeStampUS;
         float elapsedTimeInSeconds = (elapsedTimeStampUS / 1000000.0f);
@@ -558,6 +410,148 @@ int main(void) {
         if (!knobValuesInitialized && secondsSinceStartup > 1.0f) {
             // Let the initial readings of the knob values settle before trying to use them.
             knobValuesInitialized = true;
+        }
+
+        // Handle Inputs
+        hardware.ProcessAnalogControls();
+        hardware.ProcessDigitalControls();
+
+        // Process the Pots
+        float knobValueRaw;
+
+        for (int i = 0; i < hardware.GetParameterControlCount(); i++) {
+            knobValueRaw = hardware.GetParameterControlValue(i);
+
+            // Knobs don't perfectly return values in the 0.0f - 1.0f range
+            // so we will add some deadzone to either end of the knob and remap values into
+            // a full 0.0f - 1.0f range.
+            if (knobValueRaw < knobValueDeadZone) {
+                knobValueRaw = 0.0f;
+            } else if (knobValueRaw > (1.0f - knobValueDeadZone)) {
+                knobValueRaw = 1.0f;
+            } else {
+                knobValueRaw = (knobValueRaw - knobValueDeadZone) / (1.0f - (2.0f * knobValueDeadZone));
+            }
+
+            if (!knobValuesInitialized) {
+                // Initialize the knobs for the first time to whatever the current knob placements are
+                knobValueCacheChanged[i] = true;
+                knobValueTimeTilIdle[i] = 0;
+                knobValueCache[i] = knobValueRaw;
+            } else {
+                // If the knobs are initialized handle monitor them for changes.
+                if (knobValueTimeTilIdle[i] > 0) {
+                    knobValueTimeTilIdle[i] -= elapsedTimeInSeconds;
+
+                    if (knobValueTimeTilIdle[i] <= 0) {
+                        knobValueTimeTilIdle[i] = 0;
+                        knobValueCacheChanged[i] = false;
+                    }
+                }
+
+                bool knobValueChangedToleranceMet = false;
+
+                if (knobValueRaw > (knobValueCache[i] + knobValueChangeTolerance) ||
+                    knobValueRaw < (knobValueCache[i] - knobValueChangeTolerance)) {
+                    knobValueChangedToleranceMet = true;
+                    knobValueCacheChanged[i] = true;
+                    knobValueTimeTilIdle[i] = knobValueIdleTimeInSeconds;
+                }
+
+                if (knobValueChangedToleranceMet || knobValueCacheChanged[i]) {
+                    knobValueCache[i] = knobValueRaw;
+                }
+            }
+        }
+
+        // Process the switches
+        for (int sw = 0; sw < hardware.GetSwitchCount(); ++sw) {
+            bool switchPressed  = hardware.switches[sw].RisingEdge();
+            bool switchReleased = hardware.switches[sw].FallingEdge();
+            bool switchHeld  = hardware.switches[sw].TimeHeldMs() >= 1000.f;
+
+            // Dispatch all routes for this switch
+            for (const auto &r : switchRoutes[sw]) {
+                if (!r.effect) continue;
+
+                switch (r.action) {
+                    // SHORT PRESS -> fire on RisingEdge
+                    case SwitchAction::AltPressed:
+                        if (switchPressed) {
+                            r.effect->AlternateFootswitchPressed();
+                        }
+                        break;
+
+                    case SwitchAction::BypassPressed:
+                        if (switchPressed) {
+                            r.effect->BypassFootswitchPressed();
+                        }
+                        break;
+
+                    // RELEASE -> fire on FallingEdge (also clear held-guard)
+                    case SwitchAction::AltReleased:
+                        if (switchReleased) {
+                            r.effect->AlternateFootswitchReleased();
+
+                            // Reset held flag so future holds can fire
+                            switchesHeldFired[sw] = false;
+                        }
+                        break;
+
+                    case SwitchAction::BypassReleased:
+                        if (switchReleased) {
+                            r.effect->BypassFootswitchReleased();
+
+                            // Reset held flag so future holds can fire
+                            switchesHeldFired[sw] = false;
+                        }
+                        break;
+
+                    // HELD (1s) -> fire once when hold threshold reached, guarded by switchesHeldFired
+                    case SwitchAction::AltHeld1s:
+                        if (switchHeld && !switchesHeldFired[sw]) {
+                            r.effect->AlternateFootswitchHeldFor1Second();
+                            switchesHeldFired[sw] = true; // prevent repeated calls until release
+                        }
+                        break;
+
+                    case SwitchAction::BypassHeld1s:
+                        if (switchHeld && !switchesHeldFired[sw]) {
+                            r.effect->BypassFootswitchHeldFor1Second();
+                            switchesHeldFired[sw] = true; // prevent repeated calls until release
+                        }
+                        break;
+                }
+            }
+
+            // Ensure the held-flag is cleared if user releases the button without any 'Released' route mapped
+            // (keeps held-guard consistent even if no route calls reset it)
+            if (switchReleased) {switchesHeldFired[sw] = false;}
+
+            if (switchEnabledCache[sw] == true) {
+                switchEnabledTimeTilIdle[sw] -= elapsedTimeInSeconds;
+
+                if (switchEnabledTimeTilIdle[sw] <= 0) {
+                    switchEnabledCache[sw] = false;
+
+                    if (switchDoubleEnabledCache[sw] != true) {
+                        // We can safely know this was only a single tap here.
+                    }
+
+                    switchDoubleEnabledCache[sw] = false;
+                }
+            }
+
+            if (switchPressed) {
+                // Note that switch is pressed and reset the IdleTimer for detecting double presses
+                switchEnabledCache[sw] = switchPressed;
+
+                if (switchEnabledTimeTilIdle[sw] > 0) {
+                    switchDoubleEnabledCache[sw] = true;
+                }
+
+                switchEnabledTimeTilIdle[sw] = switchEnabledIdleTimeInSeconds;
+            }
         }
 
         if (knobValuesInitialized) {

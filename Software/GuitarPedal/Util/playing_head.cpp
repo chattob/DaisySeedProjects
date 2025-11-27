@@ -4,9 +4,16 @@ void PlayingHead::Reset() {
     head_position_f_ = 0.0f;
 }
 
-static inline float wrapf(float x, float L) {
-    x = std::fmod(x, L);
-    return (x < 0.0f) ? x + L : x;
+static inline float wrapf(float x, float L)
+{
+    float r = std::fmod(x, L);
+    if (r < 0.0f) {
+        r += L;
+    }
+    if (r == 0.0f && x != 0.0f) {
+        return L;         // special case: wrap L → L instead of 0
+    }
+    return r;
 }
 
 void PlayingHead::UpdatePosition(bool first_layer, size_t loop_length, float slice, float start_pos) {

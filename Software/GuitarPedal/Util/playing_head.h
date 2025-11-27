@@ -9,8 +9,8 @@ class PlayingHead {
         void Reset();
         inline void SetSpeed(float speed) {speed_ = speed;};
         void UpdatePosition(bool first_layer, size_t loop_length, float slice = 1.0f, float start_pos = 0.0f);
-        inline float GetHeadPosition() {return head_position_f_;};
-        inline float GetWrapAroundCount() {return wrap_around_count_;};
+        inline float GetHeadPosition() const {return head_position_f_;};
+        inline uint16_t GetWrapAroundCount() const {return wrap_around_count_;};
         bool SyncTo(const PlayingHead& target);
 
     private:
