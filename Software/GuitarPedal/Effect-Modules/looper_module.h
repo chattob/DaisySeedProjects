@@ -11,6 +11,9 @@
 
 /** @file looper_module.h */
 
+static constexpr int kNumLeds        = 2;
+static constexpr int kMaxBlinkSteps  = 10;
+
 namespace bkshepherd {
 
 class LooperModule : public BaseEffectModule {
@@ -37,7 +40,6 @@ class LooperModule : public BaseEffectModule {
   private:
     float output_;
     size_t loop_length_ = 0;
-    float loop_length_f_ = 0.0f;
     size_t mod = 0;
     bool is_recording_ = false;
     size_t recording_layer_ = 0;
@@ -51,8 +53,15 @@ class LooperModule : public BaseEffectModule {
     static float DSY_SDRAM_BSS buffer_[kNumLayers][kMaxBufferSize];
     PlayingHead playing_head_;
     PlayingHead recording_head_;
-    uint16_t prev_wrap_around_count_ = 0;
-    bool one_pass_recording_ = false;
+
+    mutable float   pattern_brightness_[kNumLeds]             = {0.0f, 0.0f};    
+    mutable bool    blink_[kNumLeds]                          = {false, false};
+    mutable int8_t  blink_pattern_[kNumLeds][kMaxBlinkSteps]  = {};
+    mutable uint8_t blink_tracker_[kNumLeds]                  = {0, 0};
+    mutable uint16_t prev_wrap_around_count_                  = 0;
+    mutable uint32_t next_toggle_time_[kNumLeds]              = {0, 0};
+    mutable size_t  prev_selected_layer_                      = static_cast<size_t>(-1);
+
     void ClearTopLayers(size_t clear_from);
     void SquashLayers();
     void WriteBuffer(float in);
