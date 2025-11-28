@@ -40,6 +40,7 @@ class LooperModule : public BaseEffectModule {
   private:
     float output_;
     size_t loop_length_ = 0;
+    float loop_length_f_ = 0.0f;
     size_t mod = 0;
     bool is_recording_ = false;
     size_t recording_layer_ = 0;

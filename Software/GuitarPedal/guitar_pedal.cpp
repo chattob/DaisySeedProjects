@@ -310,27 +310,25 @@ int main(void) {
     knobRoutes[4].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
     knobRoutes[4].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});
 
-
-    /*
-    knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
+    /*knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
     knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
     knobRoutes[2].push_back({delay, DelayModule::D_FEEDBACK});
     knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
-    knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});
+    knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});*/
 
-    knobRoutes[0].push_back({distortion, DistortionModule::LEVEL});
+    /*knobRoutes[0].push_back({distortion, DistortionModule::LEVEL});
     knobRoutes[1].push_back({distortion, DistortionModule::GAIN});
     knobRoutes[2].push_back({distortion, DistortionModule::TONE});
     knobRoutes[3].push_back({distortion, DistortionModule::DIST_TYPE});
     knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY});
-    knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});
-    */
-    knobRoutes[0].push_back({pitch_shifter, PitchShifterModule::SEMITONE});
+    knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});*/
+    
+    /*knobRoutes[0].push_back({pitch_shifter, PitchShifterModule::SEMITONE});
     knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
     knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
     knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
     knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
-    knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});
+    knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
 
     // 1: layers, 2: fading, 3: stability/bitcrusher, 4: slice/stretch, 5: speed/pitch, 6: distortion
     // A: single/all/direct B:fixed/flex C:

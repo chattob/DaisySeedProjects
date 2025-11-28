@@ -426,6 +426,10 @@ void BaseEffectModule::BypassFootswitchPressed() {
     m_isEnabled = !m_isEnabled;
 }
 
+void BaseEffectModule::BypassFootswitchPressed() {
+    m_isEnabled = !m_isEnabled;
+}
+
 void BaseEffectModule::SetTempo(uint32_t bpm) {
     // Do nothing.
 

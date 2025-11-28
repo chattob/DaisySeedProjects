@@ -320,7 +320,7 @@ class BaseEffectModule {
     /** Overridable callback when main footswitch is released */
     virtual void BypassFootswitchReleased(){};
     /** Overridable callback when main footswitch is held for 1 second */
-    virtual void BypassFootswitchHeldFor1Second(){};
+    virtual void BypassFootswitchHeldFor1Second();
 
     void SetCPUUsage(float cpuUsage) { m_cpuUsage = cpuUsage; };
     float GetCPUUsage() const { return m_cpuUsage; }

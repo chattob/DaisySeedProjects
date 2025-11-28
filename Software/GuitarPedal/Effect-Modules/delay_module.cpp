@@ -236,12 +236,12 @@ void DelayModule::ParameterChanged(int parameter_id) {
     }
 }
 
-void DelayModule::ProcessModulation() {
+void DelayModule::ProcessModulation(size_t size) {
     int modParam = (GetParameterAsBinnedValue(9) - 1);
     // Calculate Modulation
     int waveForm = GetParameterAsBinnedValue(10) - 1;
     if (waveForm == 5) {
-        float freq = GetParameterAsFloat(8);
+        float freq = GetParameterAsFloat(8) * size;
         float wowRate = 0.2f + 2.0f * freq;
         float flutterRate = 2.0f + 5.0f * freq;
         float wowDepth = 4.0f;
@@ -257,7 +257,7 @@ void DelayModule::ProcessModulation() {
             } else {
                 dividor = 4.0;
             }
-            float freq = (effect_samplerate / delayLeft.delayTarget) / dividor;
+            float freq = (effect_samplerate / delayLeft.delayTarget) * size / dividor;
             modOsc.SetFreq(freq);
         } else {
             modOsc.SetFreq(m_modOscFreqMin + (m_modOscFreqMax - m_modOscFreqMin) * GetParameterAsFloat(8));
@@ -294,9 +294,7 @@ void DelayModule::ProcessModulation() {
     }
 }
 
-void DelayModule::ProcessMono(float in) {
-    BaseEffectModule::ProcessMono(in);
-
+void DelayModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     if (m_isEnabled) {
         m_LEDValue = led_osc.Process(); // update the tempo LED
 
@@ -347,100 +345,30 @@ void DelayModule::ProcessMono(float in) {
             delayRight.level_reverse = 1.0;
         }
 
-        // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
-        // processing?
-        ProcessModulation();
-
-        float delLeft_out = delayLeft.Process(m_audioLeft);
-        float delRight_out = delayRight.Process(m_audioRight);
-        // float delRight_out = delLeft_out;
-
-        // Calculate any delay spread
         delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
-        float delSpread_out = delaySpread.Process(delRight_out);
-        if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
-            delRight_out = delSpread_out;
-        }
-
-        m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
-        m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
-    }
-}
-
-void DelayModule::ProcessStereo(float inL, float inR) {
-    // ProcessMono(inL);
-    // Calculate the mono effect
-
-    BaseEffectModule::ProcessStereo(inL, inR);
-    // Do the base stereo calculation (which resets the right signal to be the inputR instead of combined mono)
-
-    if (m_isEnabled) {
-        m_LEDValue = led_osc.Process(); // update the tempo LED
-
-        // Calculate the effect
-        int delayType = GetParameterAsBinnedValue(4) - 1;
-
-        float timeParam = GetParameterAsFloat(0);
-
-        delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-        delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-
-        delayLeft.feedback = GetParameterAsFloat(1);
-        delayRight.feedback = GetParameterAsFloat(1);
-        if (delayType == 1 || delayType == 3) {
-            delayLeft.reverseMode = true;
-            delayRight.reverseMode = true;
-        } else {
-            delayLeft.reverseMode = false;
-            delayRight.reverseMode = false;
-        }
-        if (delayType == 2 || delayType == 3 || delayType == 5) {
-            delayLeft.del->setOctave(true);
-            delayRight.del->setOctave(true);
-        } else {
-            delayLeft.del->setOctave(false);
-            delayRight.del->setOctave(false);
-        }
-        if (delayType == 4 || delayType == 5) {
-            delayLeft.dual_delay = true;
-            delayRight.dual_delay = true;
-        } else {
-            delayLeft.dual_delay = false;
-            delayRight.dual_delay = false;
-        }
-
-        if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
-            delayLeft.level = GetParameterAsFloat(6) + 1.0;
-            delayRight.level = 1.0 - GetParameterAsFloat(6);
-
-            delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
-            delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
-
-        } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
-                // channel
-            delayLeft.level = 1.0;
-            delayRight.level = 1.0;
-            delayLeft.level_reverse = 1.0;
-            delayRight.level_reverse = 1.0;
-        }
 
         // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
         // processing?
-        ProcessModulation();
+        ProcessModulation(size);
 
-        float delLeft_out = delayLeft.Process(m_audioLeft);
-        float delRight_out = delayRight.Process(m_audioRight);
-        // float delRight_out = delLeft_out;
+        for (size_t i = 0; i < size; i++) {
+            float delLeft_out = delayLeft.Process(in[0][i]);
+            float delRight_out = delayRight.Process(in[1][i]);
 
-        // Calculate any delay spread
-        delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
-        float delSpread_out = delaySpread.Process(delRight_out);
-        if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
-            delRight_out = delSpread_out;
+            // Calculate any delay spread
+            float delSpread_out = delaySpread.Process(delRight_out);
+            if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
+                delRight_out = delSpread_out;
+            }
+
+            out[0][i] = delLeft_out * delayWetMix + in[0][i] * delayDryMix;
+            out[1][i] = delRight_out * delayWetMix + in[1][i] * delayDryMix;
         }
-
-        m_audioLeft = delLeft_out * delayWetMix + m_audioLeft * delayDryMix;
-        m_audioRight = delRight_out * delayWetMix + m_audioRight * delayDryMix;
+    } else {
+        for (size_t i = 0; i < size; i++) {
+            out[0][i] = in[0][i];
+            out[1][i] = in[1][i];
+        }
     }
 }
 

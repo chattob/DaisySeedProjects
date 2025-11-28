@@ -61,7 +61,7 @@ LooperModule::~LooperModule() {
 }
 
 void LooperModule::ResetBuffer() {
-    /*is_playing_         = false;
+    is_playing_         = false;
     is_recording_       = false;
     first_layer_        = true;
     loop_length_        = 0;
@@ -73,52 +73,16 @@ void LooperModule::ResetBuffer() {
     playing_head_.Reset();
     recording_head_.Reset();
 
-    std::fill(&buffer_[0][0], &buffer_[0][0] + kNumLayers * kMaxBufferSize, 0.0f);
-    n_recorded_layers_ = 0;*/
-    is_playing_           = false;
-    is_recording_         = false;
-    first_layer_          = true;
-    loop_length_          = 0;
-    mod                   = kMaxBufferSize;
-
-    modifier_on_          = false;
-    offset_               = 0.0f;
-    recording_layer_      = 0;
-    selected_layer_       = 0;
-    n_recorded_layers_    = 0;
-    prev_layer_knob_val_  = 0.0f;
-    prev_wrap_around_count_ = 0;
-
-    playing_head_.Reset();
-    recording_head_.Reset();
+    n_recorded_layers_ = 0;
 }
 
-
-/*void LooperModule::ClearTopLayers(size_t clear_from) {
-    for (int layer = clear_from; layer < n_recorded_layers_; ++layer) {
-        std::fill(&buffer_[layer][0], &buffer_[layer][0] + kMaxBufferSize, 0.0f);
-    }
+void LooperModule::ClearTopLayers(size_t clear_from) {
+    std::fill(&buffer_[clear_from][0], &buffer_[clear_from][0] + kMaxBufferSize, 0.0f);
     n_recorded_layers_ = std::min(n_recorded_layers_, clear_from);
-};*/
-void LooperModule::ClearTopLayers(size_t clear_from)
-{
-    // 1) Logically drop all layers above clear_from
-    if(clear_from < n_recorded_layers_)
-    {
-        n_recorded_layers_ = clear_from;
-    }
-
-    // 2) Physically clear ONLY this layer so it’s clean for reuse
-    if(clear_from < kNumLayers)
-    {
-        std::fill(&buffer_[clear_from][0],
-                  &buffer_[clear_from][0] + kMaxBufferSize,
-                  0.0f);
-    }
-}
+};
 
 void LooperModule::SquashLayers() {
-    /*for (size_t sample = 0; sample < mod; ++sample) {
+    for (size_t sample = 0; sample < mod; ++sample) {
         buffer_[0][sample] += buffer_[1][sample];
     }
 
@@ -128,7 +92,7 @@ void LooperModule::SquashLayers() {
         }
     }
 
-    std::fill(&buffer_[kNumLayers - 1][0], &buffer_[kNumLayers - 1][0] + kMaxBufferSize, 0.0f);*/
+    std::fill(&buffer_[kNumLayers - 1][0], &buffer_[kNumLayers - 1][0] + kMaxBufferSize, 0.0f);
 }
 
 void LooperModule::AlternateFootswitchPressed(){
@@ -225,8 +189,6 @@ void LooperModule::ProcessStereo(float inL, float inR) {
     float playing_head_position_f = playing_head_.GetHeadPosition();
     size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
-    
-
     float recording_head_position_f = recording_head_.GetHeadPosition();
     size_t recording_head_position = static_cast<size_t>(recording_head_position_f);
 
@@ -249,6 +211,7 @@ void LooperModule::ProcessStereo(float inL, float inR) {
     }
     
     m_audioLeft = m_audioLeft + inL;
+    m_audioRight = m_audioLeft;
 
     if (is_recording_) {
         WriteBuffer(inL);

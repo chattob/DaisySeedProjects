@@ -139,9 +139,8 @@ class DelayModule : public BaseEffectModule {
     void UpdateLEDRate();
     void CalculateDelayMix();
     void ParameterChanged(int parameter_id) override;
-    void ProcessModulation();
-    void ProcessMono(float in) override;
-    void ProcessStereo(float inL, float inR) override;
+    void ProcessModulation(size_t size);
+    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
     void SetTempo(uint32_t bpm) override;
     float GetBrightnessForLED(int led_id) const override;
 
