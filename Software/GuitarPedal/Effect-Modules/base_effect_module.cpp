@@ -426,7 +426,7 @@ void BaseEffectModule::BypassFootswitchPressed() {
     m_isEnabled = !m_isEnabled;
 }
 
-void BaseEffectModule::BypassFootswitchPressed() {
+void BaseEffectModule::BypassFootswitchHeldFor1Second() {
     m_isEnabled = !m_isEnabled;
 }
 

@@ -23,14 +23,13 @@ void GuitarPedal125B::Init(size_t blockSize, bool boost) {
     InitKnobs(6, knobPins);
 
     TriPin tri_pins[] = {
-        {seed::D13,  seed::D14},
         {seed::D11, seed::D12},
         {seed::D9, seed::D10},
     };
-    InitTriSwitches(3, tri_pins);
+    InitTriSwitches(2, tri_pins);
 
-    Pin switchPins[] = {seed::D7, seed::D8};
-    InitSwitches(2, switchPins);
+    Pin switchPins[] = {seed::D7, seed::D8, seed::D13, seed::D14};
+    InitSwitches(4, switchPins);
 
     Pin ledPins[] = {seed::D22, seed::D23};
     InitLeds(2, ledPins);

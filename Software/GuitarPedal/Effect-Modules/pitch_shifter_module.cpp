@@ -30,7 +30,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Semitone",
         valueType : ParameterValueType::Binned,
-        valueBinCount : 8,
+        valueBinCount : 13,
         valueBinNames : s_semitoneBinNames,
         defaultValue : {.uint_value = 0},
         knobMapping : 0,
@@ -101,12 +101,7 @@ PitchShifterModule::PitchShifterModule() : BaseEffectModule() {
 PitchShifterModule::~PitchShifterModule() {}
 
 void PitchShifterModule::ProcessSemitoneTargetChange() {
-    int semitoneNum = GetParameterAsBinnedValue(0);
-
-    // If this is the last semitone option, convert it to be a full octave
-    if (semitoneNum == 8) {
-        semitoneNum = 12;
-    }
+    int semitoneNum = GetParameterAsBinnedValue(0) - 1;
 
     m_semitoneTarget = semitoneNum;
     if (m_directionDown) {

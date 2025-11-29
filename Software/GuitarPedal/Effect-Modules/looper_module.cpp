@@ -73,11 +73,15 @@ void LooperModule::ResetBuffer() {
     playing_head_.Reset();
     recording_head_.Reset();
 
+    std::fill(&buffer_[0][0], &buffer_[0][0] + kNumLayers * kMaxBufferSize, 0.0f);
+
     n_recorded_layers_ = 0;
 }
 
 void LooperModule::ClearTopLayers(size_t clear_from) {
-    std::fill(&buffer_[clear_from][0], &buffer_[clear_from][0] + kMaxBufferSize, 0.0f);
+    for (int layer = clear_from; layer < n_recorded_layers_; ++layer) {
+        std::fill(&buffer_[layer][0], &buffer_[layer][0] + kMaxBufferSize, 0.0f);
+    }
     n_recorded_layers_ = std::min(n_recorded_layers_, clear_from);
 };
 
@@ -215,6 +219,26 @@ void LooperModule::ProcessStereo(float inL, float inR) {
 
     if (is_recording_) {
         WriteBuffer(inL);
+    }
+}
+
+void LooperModule::FootswitchPressed(size_t footswitch_id) {
+    if (footswitch_id == 2) {
+        fixed_lenght_mode_ = true;
+    }
+};
+
+void LooperModule::FootswitchReleased(size_t footswitch_id) {
+    if (footswitch_id == 2) {
+        fixed_lenght_mode_ = false;
+    }
+};
+
+void LooperModule::SetParameterAsMagnitude(int parameter_id, float value) {
+    if (parameter_id == SPEED && fixed_lenght_mode_) {
+        BaseEffectModule::SetParameterAsMagnitude(parameter_id, 0.75f);
+    } else {
+        BaseEffectModule::SetParameterAsMagnitude(parameter_id, value);
     }
 }
 

@@ -7,6 +7,7 @@
 #include "Effect-Modules/looper_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/pitch_shifter_module.h"
+#include "Effect-Modules/effect_router_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -67,11 +68,6 @@ int crossFaderTransitionTimeInSamples;
 int samplesTilCrossFadingComplete;
 CpuLoadMeter cpuLoadMeter;
 
-enum class KnobCurve {
-    LinearInc,
-    LinearDec,
-};
-
 struct KnobRoute {
     BaseEffectModule*   effect;
     int                 paramId;   // index into that effect's parameter array
@@ -89,6 +85,9 @@ enum class SwitchAction {
     BypassPressed,
     BypassReleased,
     BypassHeld1s,
+
+    Id2Pressed,
+    Id2Released,
 };
 
 struct SwitchRoute {
@@ -116,7 +115,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     // Default LEDs are off
     float led1Brightness = 0.0f;
     float led2Brightness = 0.0f;
-
 
     // Store the previous value of the effect bypass so that we can determine if
     // we need to perform a toggle at the end of processing the switches
@@ -255,9 +253,10 @@ int main(void) {
     bypassToggleTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(bypassToggleTransitionTimeInSeconds);
     crossFaderTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(crossFaderTransitionTimeInSeconds);
 
-    auto* looper = new LooperModule();
-    auto* delay  = new DelayModule();
-    auto* distortion  = new DistortionModule();
+    auto* looper        = new LooperModule();
+    auto* delay         = new DelayModule();
+    auto* distortion    = new DistortionModule();
+    auto* pitch_router  = new EffectRouterModule();
     auto* pitch_shifter = new PitchShifterModule();
 
     // Fix some effect parameters
@@ -274,19 +273,29 @@ int main(void) {
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
+    pitch_shifter->SetParameterAsBinnedValue(PitchShifterModule::MODE, 1); //Latching
+    pitch_shifter->SetParameterAsFloat(PitchShifterModule::CROSSFADE, 1.0f);
+
     looper->SetEnabled(true);
     delay->SetEnabled(false);
     distortion->SetEnabled(false);
     pitch_shifter->SetEnabled(false);
+    pitch_router->SetEnabled(true);   // router must always run
 
     effectChain.push_back(looper);
     effectChain.push_back(delay);
-    //effectChain.push_back(distortion);
-    //effectChain.push_back(pitch_shifter);
+    effectChain.push_back(distortion);
+    effectChain.push_back(pitch_router);
     
     for (auto* effect : effectChain) {
         effect->Init(sample_rate);
     }
+
+    // Also init the wrapped pitch shifter
+    pitch_shifter->Init(sample_rate);
+
+    // Connect router to the inner pitch-shifter
+    pitch_router->SetInner(pitch_shifter);
 
     // Size the routes to the real knob count
     const int knobCount = hardware.GetParameterControlCount();
@@ -298,17 +307,23 @@ int main(void) {
     // Setup knob routes
     knobRoutes[0].push_back({looper, LooperModule::LAYER});
 
-    knobRoutes[1].push_back({looper, LooperModule::SPEED});
+    knobRoutes[1].push_back({looper, LooperModule::FADING});
 
-    knobRoutes[2].push_back({looper, LooperModule::SLICE});
+    knobRoutes[2].push_back({looper, LooperModule::SPEED});
+    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
+    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, 1.0f, -1.0f});
+    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, -1.0f, 1.0f});
 
-    knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
+    knobRoutes[3].push_back({looper, LooperModule::SLICE});
 
-    knobRoutes[4].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
-    knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY, 0.0f, 0.8f});
-    knobRoutes[4].push_back({distortion, DistortionModule::MIX, 0.0f, 0.8f});
-    knobRoutes[4].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
-    knobRoutes[4].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});
+    knobRoutes[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
+    knobRoutes[4].push_back({delay, DelayModule::DELAY_MIX, 0.0f, 100000.0f});
+
+    knobRoutes[5].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
+    knobRoutes[5].push_back({distortion, DistortionModule::INTENSITY, 0.0f, 0.8f});
+    knobRoutes[5].push_back({distortion, DistortionModule::MIX, 0.0f, 0.8f});
+    knobRoutes[5].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
+    knobRoutes[5].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});
 
     /*knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
     knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
@@ -323,9 +338,7 @@ int main(void) {
     knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY});
     knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});*/
     
-    /*knobRoutes[0].push_back({pitch_shifter, PitchShifterModule::SEMITONE});
-    knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
-    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
+    /*knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
     knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
     knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
     knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
@@ -333,18 +346,32 @@ int main(void) {
     // 1: layers, 2: fading, 3: stability/bitcrusher, 4: slice/stretch, 5: speed/pitch, 6: distortion
     // A: single/all/direct B:fixed/flex C:
 
-    int altSwitchID    = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
-    int bypassSwitchID = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
+    int altSwitchID         = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
+    int bypassSwitchID      = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
+    int triswitch_0_left    = 2;
+    int triswitch_0_right   = 3;
 
     // Alternate footswitch: toggle delay pressed & looper held
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltPressed});
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
+
     switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
 
+    switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassHeld1s});
+    switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassHeld1s});
+    switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassHeld1s});
+
     // Main/bypass footswitch
     switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
+
+    // Triswitch 0 left: ON/OFF for pitch-shifter routing
+    switchRoutes[triswitch_0_left].push_back({looper, SwitchAction::Id2Pressed});
+    switchRoutes[triswitch_0_left].push_back({looper, SwitchAction::Id2Released});
+    switchRoutes[triswitch_0_left].push_back({pitch_router, SwitchAction::AltPressed});
+    switchRoutes[triswitch_0_left].push_back({pitch_router, SwitchAction::AltReleased});
+
 
     // Setup Relay Bypass State
     if (hardware.SupportsTrueBypass()) {
@@ -486,6 +513,12 @@ int main(void) {
                         }
                         break;
 
+                    case SwitchAction::Id2Pressed:
+                        if (switchPressed) {
+                            r.effect->FootswitchPressed(2);
+                        }
+                        break;
+
                     // RELEASE -> fire on FallingEdge (also clear held-guard)
                     case SwitchAction::AltReleased:
                         if (switchReleased) {
@@ -499,6 +532,15 @@ int main(void) {
                     case SwitchAction::BypassReleased:
                         if (switchReleased) {
                             r.effect->BypassFootswitchReleased();
+
+                            // Reset held flag so future holds can fire
+                            switchesHeldFired[sw] = false;
+                        }
+                        break;
+
+                    case SwitchAction::Id2Released:
+                        if (switchReleased) {
+                            r.effect->FootswitchReleased(2);
 
                             // Reset held flag so future holds can fire
                             switchesHeldFired[sw] = false;
@@ -564,7 +606,10 @@ int main(void) {
                     if (!r.effect) continue;               // safety: null-check
                     if (r.paramId < 0) continue;          // safety: invalid param id
 
-                    r.effect->SetParameterAsMagnitude(r.paramId, r.outMin + v * (r.outMax - r.outMin));
+                    float val = std::min(r.outMin + v * (r.outMax - r.outMin), 1.0f);
+                    if (val >= 0.0f) {
+                        r.effect->SetParameterAsMagnitude(r.paramId, val);
+                    }
                 }
             }
         }

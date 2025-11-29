@@ -32,10 +32,13 @@ class LooperModule : public BaseEffectModule {
     void BypassFootswitchPressed() override;
     void AlternateFootswitchPressed() override;
     void AlternateFootswitchHeldFor1Second() override;
+    void FootswitchPressed(size_t footswitch_id) override;
+    void FootswitchReleased(size_t footswitch_id) override;
     //void ParameterChanged(int parameter_id) override;
     //void ProcessMono(float in) override;
     void ProcessStereo(float inL, float inR) override;
     float GetBrightnessForLED(int led_id) const override;
+    void SetParameterAsMagnitude(int parameter_id, float value) override;
 
   private:
     float output_;
@@ -50,6 +53,7 @@ class LooperModule : public BaseEffectModule {
     size_t selected_layer_ = 0;
     float prev_layer_knob_val_ = 0.0f;
     bool modifier_on_ = false;
+    bool fixed_lenght_mode_ = false;
     float offset_ = 0.0f;
     static float DSY_SDRAM_BSS buffer_[kNumLayers][kMaxBufferSize];
     PlayingHead playing_head_;

@@ -199,7 +199,7 @@ class BaseEffectModule {
      accordingly.
         \param parameter_id Id of the parameter to set. \param value the float magnitude value to set the parameter to.
     */
-    void SetParameterAsMagnitude(int parameter_id, float value);
+    virtual void SetParameterAsMagnitude(int parameter_id, float value);
 
     /** Sets the Value for a Particular Effect Parameter using a float.  If the Parameter ID isn't valid, there is no effect.
         \param parameter_id Id of the parameter to set.
@@ -321,6 +321,11 @@ class BaseEffectModule {
     virtual void BypassFootswitchReleased(){};
     /** Overridable callback when main footswitch is held for 1 second */
     virtual void BypassFootswitchHeldFor1Second();
+
+    /** Overridable callback when footswitch with specified ID is pressed */
+    virtual void FootswitchPressed(size_t footswitch_id){};
+    /** Overridable callback when footswitch with specified ID is released */
+    virtual void FootswitchReleased(size_t footswitch_id){};
 
     void SetCPUUsage(float cpuUsage) { m_cpuUsage = cpuUsage; };
     float GetCPUUsage() const { return m_cpuUsage; }
