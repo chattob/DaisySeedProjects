@@ -307,7 +307,7 @@ int main(void) {
     // Setup knob routes
     knobRoutes[0].push_back({looper, LooperModule::LAYER});
 
-    knobRoutes[1].push_back({looper, LooperModule::FADING});
+    knobRoutes[1].push_back({looper, LooperModule::FADING, 1.0f, 0.0f});
 
     knobRoutes[2].push_back({looper, LooperModule::SPEED});
     knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});

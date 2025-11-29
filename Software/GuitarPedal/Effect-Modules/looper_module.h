@@ -4,6 +4,7 @@
 
 #include "base_effect_module.h"
 #include "../Util/playing_head.h"
+#include "../Util/sd_writer.h"
 #include "../constants.h"
 #include "daisysp.h"
 #include <stdint.h>
@@ -29,6 +30,7 @@ class LooperModule : public BaseEffectModule {
         PARAM_COUNT
     };
 
+    void Init(float sample_rate) override;
     void BypassFootswitchPressed() override;
     void AlternateFootswitchPressed() override;
     void AlternateFootswitchHeldFor1Second() override;
@@ -39,6 +41,7 @@ class LooperModule : public BaseEffectModule {
     void ProcessStereo(float inL, float inR) override;
     float GetBrightnessForLED(int led_id) const override;
     void SetParameterAsMagnitude(int parameter_id, float value) override;
+    bool Poll() override;
 
   private:
     float output_;
@@ -58,6 +61,9 @@ class LooperModule : public BaseEffectModule {
     static float DSY_SDRAM_BSS buffer_[kNumLayers][kMaxBufferSize];
     PlayingHead playing_head_;
     PlayingHead recording_head_;
+
+    SDWriter::Config m_cfg;
+    SDWriter m_sd_writer;
 
     mutable float   pattern_brightness_[kNumLeds]             = {0.0f, 0.0f};    
     mutable bool    blink_[kNumLeds]                          = {false, false};

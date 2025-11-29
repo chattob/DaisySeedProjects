@@ -60,6 +60,15 @@ LooperModule::~LooperModule() {
     // No Code Needed
 }
 
+void LooperModule::Init(float sample_rate) {
+    // Init SD Card
+    //Set up SD writer
+    m_cfg.sample_rate = sample_rate;
+    m_cfg.num_channels = 1;
+    m_cfg.bits_per_sample = 16;
+    m_sd_writer.Init();
+}
+
 void LooperModule::ResetBuffer() {
     is_playing_         = false;
     is_recording_       = false;
@@ -135,7 +144,6 @@ void LooperModule::BypassFootswitchPressed(){
 
         is_recording_ = false;
         is_playing_ = true;
-        recording_layer_ = 0;
 
         if (first_layer_) {
             selected_layer_ = 0;
@@ -145,6 +153,12 @@ void LooperModule::BypassFootswitchPressed(){
         } else {
             selected_layer_ = std::min<size_t>(selected_layer_ + 1, kNumLayers - 1);
         }
+
+        char loop_name[30];
+        std::sprintf(loop_name, "test_loop2.wav");
+        m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
+        
+        recording_layer_ = 0;
     }
 };
 
@@ -220,6 +234,16 @@ void LooperModule::ProcessStereo(float inL, float inR) {
     if (is_recording_) {
         WriteBuffer(inL);
     }
+
+    m_sd_writer.PushSample();
+}
+
+bool LooperModule::Poll() {
+    bool res = m_sd_writer.WriteFloatPoll();
+    if (res) {
+        m_sd_writer.Close();
+    }
+    return res;
 }
 
 void LooperModule::FootswitchPressed(size_t footswitch_id) {
