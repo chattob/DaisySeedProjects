@@ -348,8 +348,8 @@ int main(void) {
 
     int altSwitchID         = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
-    int triswitch_0_left    = 2;
-    int triswitch_0_right   = 3;
+    int triswitch_0_left    = 6;
+    int triswitch_0_right   = 7;
 
     // Alternate footswitch: toggle delay pressed & looper held
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltPressed});

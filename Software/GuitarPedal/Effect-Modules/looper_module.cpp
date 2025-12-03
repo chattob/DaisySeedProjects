@@ -155,7 +155,23 @@ void LooperModule::BypassFootswitchPressed(){
         }
 
         char loop_name[30];
-        std::sprintf(loop_name, "test_loop2.wav");
+        size_t redo_index = 0;
+        FRESULT res = FR_NO_FILE;
+        while (true) {
+            std::snprintf(loop_name, sizeof(loop_name),
+                    "L%u_%u.wav", recording_layer_, (unsigned)redo_index);
+
+            // test existence
+            FRESULT res = f_stat(loop_name, NULL);
+            if (res == FR_NO_FILE) {
+                // filename does not exist → OK to use
+                break;
+            }
+
+            // file exists → try next index
+            redo_index++;
+        }
+        
         m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
         
         recording_layer_ = 0;
