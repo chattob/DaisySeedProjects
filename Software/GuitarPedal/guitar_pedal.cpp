@@ -6,6 +6,7 @@
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/looper_module.h"
 #include "Effect-Modules/distortion_module.h"
+#include "Effect-Modules/filter_module.h"
 #include "Effect-Modules/pitch_shifter_module.h"
 #include "Effect-Modules/effect_router_module.h"
 #include "Util/audio_utilities.h"
@@ -20,6 +21,8 @@ constexpr size_t kBlockSize = 48;
 
 // Effect Related Variables
 std::vector<BaseEffectModule*> effectChain;
+LooperModule* glooper = nullptr;
+bool preFXmode = false;
 
 // Hardware Related Variables
 bool effectOn = false;
@@ -68,11 +71,16 @@ int crossFaderTransitionTimeInSamples;
 int samplesTilCrossFadingComplete;
 CpuLoadMeter cpuLoadMeter;
 
+typedef float (*KnobMapFn)(float);
+
+static constexpr KnobMapFn kDefaultMap = [](float x) {
+    return fclamp(x, 0.0f, 1.0f);
+};
+
 struct KnobRoute {
     BaseEffectModule*   effect;
     int                 paramId;   // index into that effect's parameter array
-    float               outMin     = 0.0f;   // mapped range min
-    float               outMax     = 1.0f;   // mapped range max
+    KnobMapFn           mapper = kDefaultMap;   // default linear
 };
 
 std::vector<std::vector<KnobRoute>> knobRoutes;
@@ -88,6 +96,8 @@ enum class SwitchAction {
 
     Id2Pressed,
     Id2Released,
+
+    PrePostModeSelect
 };
 
 struct SwitchRoute {
@@ -96,11 +106,6 @@ struct SwitchRoute {
 };
 
 std::vector<std::vector<SwitchRoute>> switchRoutes;
-
-static inline BaseEffectModule* First()
-{
-    return effectChain.empty() ? nullptr : effectChain[0];
-}
 
 //======================================================================
 //                            AUDIO CALLBACK
@@ -158,14 +163,38 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTarget[1][i] = in[1][i];
     }
 
-    if (!effectChain.empty() && (effectOn || isCrossFading)) {
-        for (auto* fx : effectChain) {
-            if (!fx) continue;
-            if (!fx->IsEnabled()) continue;
-            if (hardware.SupportsStereo()) {
-                fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-            } else {
-                fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+    if (preFXmode) {
+        if (!effectChain.empty() && (effectOn || isCrossFading)) {
+            for (auto* fx : effectChain) {
+                if (!fx) continue;
+                if (!fx->IsEnabled()) continue;
+                if (hardware.SupportsStereo()) {
+                    fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+                } else {
+                    fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+                }
+            }
+        }
+        if (hardware.SupportsStereo()) {
+            glooper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+        } else {
+            glooper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+        }
+    } else {
+        if (hardware.SupportsStereo()) {
+            glooper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+        } else {
+            glooper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+        }
+        if (!effectChain.empty() && (effectOn || isCrossFading)) {
+            for (auto* fx : effectChain) {
+                if (!fx) continue;
+                if (!fx->IsEnabled()) continue;
+                if (hardware.SupportsStereo()) {
+                    fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+                } else {
+                    fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+                }
             }
         }
     }
@@ -222,10 +251,8 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     }
 
     // Update state of the LEDs
-    if (auto* effect = First()) {
-        led1Brightness = effect->GetBrightnessForLED(0);
-        led2Brightness = effect->GetBrightnessForLED(1);
-    } 
+    led1Brightness = glooper->GetBrightnessForLED(0);
+    led2Brightness = glooper->GetBrightnessForLED(1); 
 
     // Handle LEDs
     hardware.SetLed(0, led1Brightness);
@@ -256,6 +283,8 @@ int main(void) {
     auto* looper        = new LooperModule();
     auto* delay         = new DelayModule();
     auto* distortion    = new DistortionModule();
+    auto* pre_eq        = new FilterModule();
+    auto* post_eq        = new FilterModule();
     auto* pitch_router  = new EffectRouterModule();
     auto* pitch_shifter = new PitchShifterModule();
 
@@ -271,29 +300,41 @@ int main(void) {
 
     distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
+    distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 1);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
+
+    pre_eq->SetParameterAsBool(FilterModule::HP_MODE, true);
+    pre_eq->SetParameterAsFloat(FilterModule::CUTOFF, 0.0f);
+    post_eq->SetParameterAsBool(FilterModule::HP_MODE, false);
+    post_eq->SetParameterAsFloat(FilterModule::CUTOFF, 0.96f);
 
     pitch_shifter->SetParameterAsBinnedValue(PitchShifterModule::MODE, 1); //Latching
     pitch_shifter->SetParameterAsFloat(PitchShifterModule::CROSSFADE, 1.0f);
 
     looper->SetEnabled(true);
     delay->SetEnabled(false);
+    pre_eq->SetEnabled(false);
     distortion->SetEnabled(false);
+    post_eq->SetEnabled(false);
     pitch_shifter->SetEnabled(false);
     pitch_router->SetEnabled(true);   // router must always run
 
-    effectChain.push_back(looper);
+    glooper = looper;
+
     effectChain.push_back(delay);
+    effectChain.push_back(pre_eq);
     effectChain.push_back(distortion);
-    effectChain.push_back(pitch_router);
+    effectChain.push_back(post_eq);
+    //effectChain.push_back(pitch_router);
     
+    glooper->Init(sample_rate);
+
     for (auto* effect : effectChain) {
         effect->Init(sample_rate);
     }
 
     // Also init the wrapped pitch shifter
     pitch_shifter->Init(sample_rate);
-
     // Connect router to the inner pitch-shifter
     pitch_router->SetInner(pitch_shifter);
 
@@ -305,7 +346,7 @@ int main(void) {
     switchRoutes.resize(hardware.GetSwitchCount());
 
     // Setup knob routes
-    knobRoutes[0].push_back({looper, LooperModule::LAYER});
+    /*knobRoutes[0].push_back({looper, LooperModule::LAYER});
 
     knobRoutes[1].push_back({looper, LooperModule::FADING, 1.0f, 0.0f});
 
@@ -314,16 +355,16 @@ int main(void) {
     knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, 1.0f, -1.0f});
     knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, -1.0f, 1.0f});
 
-    knobRoutes[3].push_back({looper, LooperModule::SLICE});
+    knobRoutes[3].push_back({looper, LooperModule::SLICE});*/
 
     knobRoutes[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
-    knobRoutes[4].push_back({delay, DelayModule::DELAY_MIX, 0.0f, 100000.0f});
+    knobRoutes[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    knobRoutes[5].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
+    /*knobRoutes[5].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
     knobRoutes[5].push_back({distortion, DistortionModule::INTENSITY, 0.0f, 0.8f});
     knobRoutes[5].push_back({distortion, DistortionModule::MIX, 0.0f, 0.8f});
     knobRoutes[5].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
-    knobRoutes[5].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});
+    knobRoutes[5].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});*/
 
     /*knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
     knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
@@ -331,12 +372,8 @@ int main(void) {
     knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
     knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});*/
 
-    /*knobRoutes[0].push_back({distortion, DistortionModule::LEVEL});
-    knobRoutes[1].push_back({distortion, DistortionModule::GAIN});
-    knobRoutes[2].push_back({distortion, DistortionModule::TONE});
-    knobRoutes[3].push_back({distortion, DistortionModule::DIST_TYPE});
-    knobRoutes[4].push_back({distortion, DistortionModule::INTENSITY});
-    knobRoutes[5].push_back({distortion, DistortionModule::OVERSAMP});*/
+    knobRoutes[0].push_back({distortion, DistortionModule::GAIN});
+    knobRoutes[0].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
     
     /*knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
     knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
@@ -348,30 +385,34 @@ int main(void) {
 
     int altSwitchID         = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
-    int triswitch_0_left    = 6;
-    int triswitch_0_right   = 7;
+    int triswitch_0_left    = 2;
+    int triswitch_0_right   = 3;
+    int triswitch_1_left    = 4;
+    int triswitch_1_right   = 5;
+    int triswitch_2_left    = 6;
+    int triswitch_2_right   = 7;
 
     // Alternate footswitch: toggle delay pressed & looper held
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltPressed});
     switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
 
     switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
+    switchRoutes[altSwitchID].push_back({pre_eq, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
+    switchRoutes[altSwitchID].push_back({post_eq, SwitchAction::BypassPressed});
     switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
-
-    switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassHeld1s});
-    switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassHeld1s});
-    switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassHeld1s});
 
     // Main/bypass footswitch
     switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
 
-    // Triswitch 0 left: ON/OFF for pitch-shifter routing
-    switchRoutes[triswitch_0_left].push_back({looper, SwitchAction::Id2Pressed});
-    switchRoutes[triswitch_0_left].push_back({looper, SwitchAction::Id2Released});
-    switchRoutes[triswitch_0_left].push_back({pitch_router, SwitchAction::AltPressed});
-    switchRoutes[triswitch_0_left].push_back({pitch_router, SwitchAction::AltReleased});
+    // Triswitch 1 left: ON/OFF for pitch-shifter routing
+    switchRoutes[triswitch_1_left].push_back({looper, SwitchAction::Id2Pressed});
+    switchRoutes[triswitch_1_left].push_back({looper, SwitchAction::Id2Released});
+    switchRoutes[triswitch_1_left].push_back({pitch_router, SwitchAction::AltPressed});
+    switchRoutes[triswitch_1_left].push_back({pitch_router, SwitchAction::AltReleased});
 
+    // Triswitch 2: left = pre-fx, right/mid = post-fx
+    switchRoutes[triswitch_2_left].push_back({nullptr, SwitchAction::PrePostModeSelect});
 
     // Setup Relay Bypass State
     if (hardware.SupportsTrueBypass()) {
@@ -410,19 +451,29 @@ int main(void) {
     lastTimeStampUS = System::GetUs();
 
     // Setup Debug Logging
-    // hardware.seed.StartLog();
+    hardware.seed.StartLog();
+
+    uint32_t last_print = 0;
 
     while (1) {
         // Handle Clock Time
         uint32_t currentTimeStampUS = System::GetUs();
-        volatile bool frozen;
-        if (currentTimeStampUS == lastTimeStampUS) {
-            frozen = true;
-        }
         uint32_t elapsedTimeStampUS = currentTimeStampUS - lastTimeStampUS;
         lastTimeStampUS = currentTimeStampUS;
         float elapsedTimeInSeconds = (elapsedTimeStampUS / 1000000.0f);
         secondsSinceStartup = secondsSinceStartup + elapsedTimeInSeconds;
+
+        // print every 500 ms
+        if(currentTimeStampUS - last_print > 500000)
+        {
+            last_print = currentTimeStampUS;
+            int avg = (int)(cpuLoadMeter.GetAvgCpuLoad() * 100.0f + 0.5f);
+            int minv = (int)(cpuLoadMeter.GetMinCpuLoad() * 100.0f + 0.5f);
+            int maxv = (int)(cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
+
+            hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+
+        }
 
         // Run polling action.
         bool res = false;
@@ -430,6 +481,7 @@ int main(void) {
             if (!effect) continue;
             res |= effect->Poll();
         }
+        glooper->Poll();
 
         // Handle Knob Changes
         if (!knobValuesInitialized && secondsSinceStartup > 1.0f) {
@@ -495,10 +547,8 @@ int main(void) {
             bool switchReleased = hardware.switches[sw].FallingEdge();
             bool switchHeld  = hardware.switches[sw].TimeHeldMs() >= 1000.f;
 
-            // Dispatch all routes for this switch
+            // Dispatch all routes for this switch //TODO: add safety in case r.effect is nullptr but keep it possible for PostPreFX select.
             for (const auto &r : switchRoutes[sw]) {
-                if (!r.effect) continue;
-
                 switch (r.action) {
                     // SHORT PRESS -> fire on RisingEdge
                     case SwitchAction::AltPressed:
@@ -561,6 +611,15 @@ int main(void) {
                             switchesHeldFired[sw] = true; // prevent repeated calls until release
                         }
                         break;
+
+                    case SwitchAction::PrePostModeSelect:
+                        if (switchPressed) {
+                            preFXmode = true;
+                        }
+                        if (switchReleased) {
+                            preFXmode = false;
+                        }
+                        break;
                 }
             }
 
@@ -606,10 +665,9 @@ int main(void) {
                     if (!r.effect) continue;               // safety: null-check
                     if (r.paramId < 0) continue;          // safety: invalid param id
 
-                    float val = std::min(r.outMin + v * (r.outMax - r.outMin), 1.0f);
-                    if (val >= 0.0f) {
-                        r.effect->SetParameterAsMagnitude(r.paramId, val);
-                    }
+                    float val = r.mapper(v);
+                    val = fclamp(val, 0.0f, 1.0f);
+                    r.effect->SetParameterAsMagnitude(r.paramId, val);
                 }
             }
         }

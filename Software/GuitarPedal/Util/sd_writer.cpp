@@ -5,7 +5,7 @@ static constexpr size_t TRANSFER_SIZE = 16384;
 // Force these into AXI SRAM (not DTCM)
 DSY_SDRAM_BSS SdmmcHandler   SDWriter::sd_;
 DSY_SDRAM_BSS FatFSInterface SDWriter::fsi;
-DSY_SDRAM_BSS WavWriter<16384> SDWriter::writer_;
+DSY_SDRAM_BSS MyWavWriter<16384> SDWriter::writer_;
 
 // Default Constructor
 SDWriter::SDWriter() {
@@ -32,36 +32,52 @@ void SDWriter::Init() {
     // Mount SD Card
     FRESULT res = f_mount(&fsi.GetSDFileSystem(), "/", 1);
     if(res != FR_OK) {
-        while(1){}
+        status_ = SDWriter::INIT_FAILED;
+    } else {
+        status_ = SDWriter::IDLE;
     }
 }
 
-void SDWriter::StartWrite(const char* filename, const Config& cfg, const float* buffer, size_t totalSamples)
+bool SDWriter::StartWrite(const char* filename, const Config& cfg, const float* buffer, size_t totalSamples)
 {
+    if (status_ != IDLE || buffer == nullptr || totalSamples == 0) {
+        return false;   // either busy or invalid params
+    }
+
     cfg_ = cfg;
 
-    WavWriter<TRANSFER_SIZE>::Config wcfg;
+    MyWavWriter<TRANSFER_SIZE>::Config wcfg;
     wcfg.samplerate    = static_cast<float>(cfg.sample_rate);
     wcfg.channels      = cfg.num_channels;
     wcfg.bitspersample = cfg.bits_per_sample;
 
     writer_.Init(wcfg);
     writer_.OpenFile(filename);
+
+    if (!writer_.IsRecording()) {
+        status_ = ERROR;
+        opened_ = false;
+        done_   = true;
+        return false;
+    }
     
     buffer_       = buffer;
     totalSamples_ = totalSamples;
     writeIndex_   = 0;
     done_         = false;
-    opened_       = writer_.IsRecording();
+    opened_       = true;
+    status_       = WRITING;
+
+    return true;
 }
 
 void SDWriter::PushSample()
 {
-    if(!opened_ || done_ || buffer_ == nullptr)
+    if(!opened_ || done_ || buffer_ == nullptr || status_ != WRITING) {
         return;
+    }
 
-    if(writeIndex_ >= totalSamples_)
-    {
+    if(writeIndex_ >= totalSamples_) {
         done_ = true;
         return;
     }
@@ -72,36 +88,38 @@ void SDWriter::PushSample()
 
 bool SDWriter::WriteFloatPoll()
 {
-    if(!opened_)
+    if(!opened_ || status_ != WRITING) {
         return false;
+    }
 
     writer_.Write();              // drain if a half is ready
 
-    if(done_)
-    {
+    if(done_){
         // one last drain in case the last half was marked while we raced
         writer_.Write();
         return true;              // signal caller to Close()
     }
 
-    if(writeIndex_ >= totalSamples_)
+    if(writeIndex_ >= totalSamples_) {
         done_ = true;
+    }
 
     return done_;
 }
 
 void SDWriter::Close()
 {
-    if(!opened_)
+    if(!opened_) {
         return;
+    }
 
     // final drain before header rewrite
     writer_.Write();
     writer_.SaveFile();
     opened_ = false;
     done_   = true;
-}
 
-bool SDWriter::IsWriting() const {
-    return writer_.IsRecording();
+    if(status_ == WRITING) {
+        status_ = IDLE;
+    }
 }

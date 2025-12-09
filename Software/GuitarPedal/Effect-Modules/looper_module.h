@@ -64,6 +64,7 @@ class LooperModule : public BaseEffectModule {
 
     SDWriter::Config m_cfg;
     SDWriter m_sd_writer;
+    bool saving_to_sd_ = false;
 
     mutable float   pattern_brightness_[kNumLeds]             = {0.0f, 0.0f};    
     mutable bool    blink_[kNumLeds]                          = {false, false};

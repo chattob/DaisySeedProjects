@@ -30,8 +30,8 @@ class EffectRouterModule : public BaseEffectModule {
     void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
 
   private:
-    BaseEffectModule* inner_;
-    bool              tri_left_active_;
+    BaseEffectModule* inner_ = nullptr;
+    bool              tri_left_active_ = false;
     float             sample_rate_;
 
     inline void CopyStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)

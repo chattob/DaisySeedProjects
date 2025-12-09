@@ -2,13 +2,20 @@
 
 #include "daisy_seed.h"
 #include "fatfs.h"
-#include "../../libDaisy/src/util/WavWriter.h"
+#include "WavWriter.h"
 
 using namespace daisy;
 
 class SDWriter
 {
   public:
+  enum Status {
+        INIT_FAILED = 0,
+        IDLE,
+        WRITING,
+        ERROR
+    };
+
     struct Config
     {
         float sample_rate;
@@ -18,24 +25,28 @@ class SDWriter
 
     SDWriter();
     ~SDWriter();
-    void Init();//daisy::FatFSInterface& fsi, FIL* sd_file, daisy::SdmmcHandler& sd, const Config& cfg);
-    void    StartWrite(const char* filename, const Config& cfg, const float* buffer, size_t totalSamples);
+    void    Init();//daisy::FatFSInterface& fsi, FIL* sd_file, daisy::SdmmcHandler& sd, const Config& cfg);
+    bool    StartWrite(const char* filename, const Config& cfg, const float* buffer, size_t totalSamples);
     void    PushSample();         // call this in audio callback
     bool    WriteFloatPoll();     // call this in main loop
     void    Close();
-    bool    IsWriting() const;
+    bool    IsBusy()   const { return status_ == WRITING; }
+    bool    HasError() const { return status_ == INIT_FAILED || status_ == ERROR; }
+    void    MarkCardError() { status_ = INIT_FAILED; opened_ = false; done_ = true; }
+
 
   private:
     static SdmmcHandler   sd_;
     static FatFSInterface fsi;
     static FIL            SDFile;
-    static WavWriter<16384> writer_;
+    static MyWavWriter<16384> writer_;
     Config cfg_;
 
     // internal state
-    const float* buffer_       = nullptr;
-    size_t       totalSamples_ = 0;
-    size_t       writeIndex_   = 0;
-    bool         opened_       = false;
-    bool         done_         = false;
+    const float* buffer_  = nullptr;
+    size_t totalSamples_  = 0;
+    size_t writeIndex_    = 0;
+    bool opened_          = false;
+    bool done_            = false;
+    Status status_        = INIT_FAILED;
 };

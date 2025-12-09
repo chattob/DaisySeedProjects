@@ -15,6 +15,11 @@ using namespace daisysp;
 
 namespace bkshepherd {
 
+constexpr uint8_t oversamplingFactor = 4;
+constexpr float preFilterCutoffBase = 140.0f;
+constexpr float preFilterCutoffMax = 300.0f;
+constexpr float postFilterCutoff = 8000.0f;
+
 class DistortionModule : public BaseEffectModule {
   public:
     DistortionModule();
@@ -33,23 +38,35 @@ class DistortionModule : public BaseEffectModule {
 
     void Init(float sample_rate) override;
     void ParameterChanged(int parameter_id) override;
-    void ProcessMono(float in) override;
-    void ProcessStereo(float inL, float inR) override;
+    void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)  override;
+    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
     float GetBrightnessForLED(int led_id) const override;
 
   private:
     float ProcessTiltToneControl(float in);
     void InitializeFilters();
+    float hardClipping(float input, float threshold);
+    float diodeClipping(float input, float threshold);
+    float softClipping(float input, float gain);
+    float fuzzEffect(float input, float intensity);
+    float tubeSaturation(float input, float gain);
+    float multiStage(float sample, float drive);
+    float dynamicPreFilterCutoff(float inputEnergy);
+    void processDistortion(float &sample, const float &gain, const int &clippingType, const float &intensity);
+    void normalizeVolume(float &sample, int clippingType);
 
     float m_levelMin = 0.0f;
     float m_levelMax = 1.0f;
 
     float m_gainMin = 1.0f;
-    float m_gainMax = 20.0f;
+    float m_gainMax = 15.0f;
 
     Tone m_tone;
 
     bool m_oversampling;
+    float m_os_buffer[oversamplingFactor];  // workspace for oversampling
+    float m_env = 0.0f;
+    float m_pre_cutoff = preFilterCutoffBase;
 };
 } // namespace bkshepherd
 #endif

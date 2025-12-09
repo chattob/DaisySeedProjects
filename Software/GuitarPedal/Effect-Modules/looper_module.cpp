@@ -77,14 +77,14 @@ void LooperModule::ResetBuffer() {
     loop_length_f_      = 0.0f;
     mod                 = kMaxBufferSize;
 
-    modifier_on_        = false;
-
     playing_head_.Reset();
     recording_head_.Reset();
 
     std::fill(&buffer_[0][0], &buffer_[0][0] + kNumLayers * kMaxBufferSize, 0.0f);
 
     n_recorded_layers_ = 0;
+
+    saving_to_sd_ = false;
 }
 
 void LooperModule::ClearTopLayers(size_t clear_from) {
@@ -121,6 +121,10 @@ void LooperModule::AlternateFootswitchPressed(){
 
 void LooperModule::BypassFootswitchPressed(){
     if (!is_recording_) {
+        // If SD is currently saving, ignore any attempt to START a new recording.
+        if (m_sd_writer.IsBusy()) {
+            return;
+        }
         if (n_recorded_layers_ == 0) {
             recording_layer_ = 0;
         } else {
@@ -154,27 +158,41 @@ void LooperModule::BypassFootswitchPressed(){
             selected_layer_ = std::min<size_t>(selected_layer_ + 1, kNumLayers - 1);
         }
 
-        char loop_name[30];
-        size_t redo_index = 0;
-        FRESULT res = FR_NO_FILE;
-        while (true) {
-            std::snprintf(loop_name, sizeof(loop_name),
-                    "L%u_%u.wav", recording_layer_, (unsigned)redo_index);
+        // Attempt to start saving, if the SD is OK and not already busy.
+        if (!m_sd_writer.HasError() && !m_sd_writer.IsBusy()) {
+            char loop_name[30];
+            size_t redo_index = 0;
+            FRESULT stat_res;
+            while (true) {
+                std::snprintf(loop_name, sizeof(loop_name),
+                        "L%u_%u.wav", recording_layer_, static_cast<unsigned>(redo_index));
 
-            // test existence
-            FRESULT res = f_stat(loop_name, NULL);
-            if (res == FR_NO_FILE) {
-                // filename does not exist → OK to use
-                break;
+                stat_res = f_stat(loop_name, NULL);
+
+                if (stat_res == FR_NO_FILE) {
+                    // filename does not exist → OK to use
+                    break;
+                }
+
+                // SD card missing / I/O error / no filesystem
+                if (stat_res == FR_NOT_READY ||
+                    stat_res == FR_DISK_ERR  ||
+                    stat_res == FR_NO_FILESYSTEM)
+                {
+                    m_sd_writer.MarkCardError();
+                    saving_to_sd_ = false;
+                    goto after_sd;   // abort SD saving, keep audio running
+                }
+
+                // file exists → try next index
+                redo_index++;
             }
-
-            // file exists → try next index
-            redo_index++;
+            
+            saving_to_sd_ = m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
         }
         
-        m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
-        
-        recording_layer_ = 0;
+        after_sd:
+            recording_layer_ = 0;
     }
 };
 
@@ -255,11 +273,19 @@ void LooperModule::ProcessStereo(float inL, float inR) {
 }
 
 bool LooperModule::Poll() {
-    bool res = m_sd_writer.WriteFloatPoll();
-    if (res) {
-        m_sd_writer.Close();
+    if (m_sd_writer.HasError())
+    {
+        saving_to_sd_ = false;
+        return false;
     }
-    return res;
+
+    bool finished = m_sd_writer.WriteFloatPoll();
+    if (finished)
+    {
+        m_sd_writer.Close();
+        saving_to_sd_ = false;
+    }
+    return finished;
 }
 
 void LooperModule::FootswitchPressed(size_t footswitch_id) {
@@ -289,6 +315,15 @@ float LooperModule::GetBrightnessForLED(int led_id) const
 
     // One timestamp per call
     const uint32_t now_ms = daisy::System::GetNow();
+
+    // --------------------------------------------------------------------
+    // 0. SD write indicator: fast blink on LED 0 while saving
+    // --------------------------------------------------------------------
+    if (led_id == 0 && saving_to_sd_)
+    {
+        bool on = ((now_ms / BLINK_INTERVAL_MS) % 2) == 0;
+        return on ? 1.0f : 0.0f;
+    }
 
     // --------------------------------------------------------------------
     // 1. BASE BRIGHTNESS PER LED

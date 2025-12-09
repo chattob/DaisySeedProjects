@@ -240,12 +240,12 @@ void DelayModule::ProcessModulation(size_t size) {
     int modParam = (GetParameterAsBinnedValue(9) - 1);
     // Calculate Modulation
     int waveForm = GetParameterAsBinnedValue(10) - 1;
+    float wowDepth = 2.0f;
+    float flutterDepth = 2.0f;
     if (waveForm == 5) {
         float freq = GetParameterAsFloat(8) * size;
         float wowRate = 0.2f + 2.0f * freq;
         float flutterRate = 2.0f + 5.0f * freq;
-        float wowDepth = 4.0f;
-        float flutterDepth = 4.0f;
         m_currentMod = modTape.GetTapeSpeed(wowRate, flutterRate, wowDepth, flutterDepth);
     } else {
         modOsc.SetWaveform(waveForm);
@@ -271,10 +271,34 @@ void DelayModule::ProcessModulation(size_t size) {
 
     // {"None", "DelayTime", "DelayLevel", "Level", "DelayPan"};
     if (modParam == 1) {
-        float timeParam = GetParameterAsFloat(0);
-        delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
-        delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
+        float delayTarget;
+        float timeParam = GetParameterAsFloat(DELAY_TIME);
+        const float D_min = 1.0f; // minimum allowable delay time: 1 sample
 
+        if (waveForm == 5) {
+            // Tape flutter mode with dynamic min
+            const float M     = wowDepth + 0.2f * flutterDepth; // Max amplitude of tape modulation.
+            const float depth = 500.0f;
+
+            float baseMin = D_min + M * mod_amount * depth;
+            float baseMax = m_delaySamplesMax; // or some flutter-specific max
+
+            float base = baseMin + (baseMax - baseMin) * timeParam;
+
+            delayTarget = base + mod * mod_amount * depth;
+        } else {            
+            delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
+            delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
+        }
+        if (delayTarget < D_min) {
+            delayTarget = D_min;
+        }
+        if (delayTarget > MAX_DELAY_NORM - 2) { 
+            delayTarget = MAX_DELAY_NORM - 2;
+        }
+
+        delayLeft.delayTarget  = delayTarget;
+        delayRight.delayTarget = delayTarget;
     } else if (modParam == 2) {
         float mod_level = mod * mod_amount + (1.0 - mod_amount);
         delayLeft.level = mod_level;

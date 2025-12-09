@@ -2,10 +2,7 @@
 
 using namespace bkshepherd;
 
-EffectRouterModule::EffectRouterModule() : BaseEffectModule() {
-    inner_ = nullptr;
-    bool tri_left_active_ = false;
-}
+EffectRouterModule::EffectRouterModule() : BaseEffectModule() {}
 
 EffectRouterModule::~EffectRouterModule() {}
 
