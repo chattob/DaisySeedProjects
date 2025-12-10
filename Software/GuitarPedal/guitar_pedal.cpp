@@ -63,6 +63,18 @@ bool *switchesHeldFired = nullptr;
 bool needToChangeTempo = false;
 uint32_t globalTempoBPM = 0;
 
+// Midi
+bool globalMidiEnabled = true;
+bool globalMidiThrough = true;
+int globalMidiChannel = 1;
+struct MidiClockState
+{
+    uint32_t tickCount = 0;   // how many TimingClock ticks since Start
+    bool     running    = false;
+};
+MidiClockState globalClock;
+bool odd_beat = false;
+
 bool isCrossFading = false;
 bool isCrossFadingForward = true; // True goes Source->Target, False goes Target->Source
 CrossFade crossFaderLeft, crossFaderRight;
@@ -107,11 +119,134 @@ struct SwitchRoute {
 
 std::vector<std::vector<SwitchRoute>> switchRoutes;
 
+// Typical Switch case for Message Type.
+void HandleMidiMessage(MidiEvent m) {
+    if (!hardware.SupportsMidi()) {
+        return;
+    }
+
+    int channel = 0;
+
+    // Make sure the settings midi channel is within the proper range
+    // and convert the channel to be zero indexed instead of 1 like the setting.
+    if (globalMidiChannel >= 1 && globalMidiChannel <= 16) {
+        channel = globalMidiChannel - 1;
+    }
+
+    // Pass the midi message through to midi out if so desired (only handles non system event types)
+    if (globalMidiThrough && m.type < SystemCommon) {
+        // Re-pack the Midi Message
+        uint8_t midiData[3];
+
+        midiData[0] = 0b10000000 | ((uint8_t)m.type << 4) | ((uint8_t)m.channel);
+        midiData[1] = m.data[0];
+        midiData[2] = m.data[1];
+
+        int bytesToSend = 3;
+
+        if (m.type == ChannelPressure || m.type == ProgramChange) {
+            bytesToSend = 2;
+        }
+
+        hardware.midi.SendMessage(midiData, sizeof(uint8_t) * bytesToSend);
+    }
+
+    if (m.type == SystemRealTime) {
+        switch (m.srt_type) {
+        case TimingClock:
+            if(globalClock.running)
+                globalClock.tickCount++;
+
+                // detect BEAT here, per tick
+                if(globalClock.tickCount % 24 == 0)
+                {
+                    odd_beat = !odd_beat; // toggle every quarter note
+                }
+            break;
+
+        case Start:
+            globalClock.tickCount = 0;
+            globalClock.running    = true;
+            break;
+
+        case Continue:
+            globalClock.running    = true;
+            break;
+
+        case Stop:
+            globalClock.running    = false;
+            break;
+
+        default:
+            // ignore others
+            break; 
+        }
+    }
+
+    // Only listen to messages for the devices set channel.
+    if (m.channel != channel) {
+        return;
+    }
+
+    switch (m.type) {
+    case NoteOn: {
+        /*if (activeEffect != NULL) {
+            NoteOnEvent p = m.AsNoteOn();
+            activeEffect->OnNoteOn(p.note, p.velocity);
+        }*/
+        break;
+    }
+    case NoteOff: {
+        /*if (activeEffect != NULL) {
+            NoteOnEvent p = m.AsNoteOn();
+            activeEffect->OnNoteOff(p.note, p.velocity);
+        }*/
+        break;
+    }
+    case ControlChange: {
+        /*if (activeEffect != nullptr) {
+            ControlChangeEvent p = m.AsControlChange();
+
+            // Notify the activeEffect to handle this midi cc / value
+            activeEffect->MidiCCValueNotification(p.control_number, p.value);
+
+            // Notify the UI to update if this CC message was mapped to an EffectParameter
+            int effectParamID = activeEffect->GetMappedParameterIDForMidiCC(p.control_number);
+
+            if (effectParamID != -1) {
+                guitarPedalUI.UpdateActiveEffectParameterValue(effectParamID, true);
+            }
+        }*/
+        break;
+    }
+    case ProgramChange: {
+        /*ProgramChangeEvent p = m.AsProgramChange();
+
+        if (p.program >= 0 && p.program < availableEffectsCount) {
+            SetActiveEffect(p.program);
+        }*/
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 //======================================================================
 //                            AUDIO CALLBACK
 //======================================================================
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     cpuLoadMeter.OnBlockStart();
+
+    // Handle MIDI Events
+    if (hardware.SupportsMidi() && globalMidiEnabled) {
+        hardware.midi.Listen();
+
+        while (hardware.midi.HasEvents()) {
+            MidiEvent event = hardware.midi.PopEvent();
+            HandleMidiMessage(event);
+        }
+    }
 
     // Process Audio
     float inputLeft;
@@ -251,8 +386,11 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     }
 
     // Update state of the LEDs
-    led1Brightness = glooper->GetBrightnessForLED(0);
-    led2Brightness = glooper->GetBrightnessForLED(1); 
+    /*led1Brightness = glooper->GetBrightnessForLED(0);
+    led2Brightness = glooper->GetBrightnessForLED(1); */
+
+    led1Brightness = odd_beat ? 1.0f : 0.0f;
+    led2Brightness = odd_beat ? 0.0f : 1.0f;
 
     // Handle LEDs
     hardware.SetLed(0, led1Brightness);
@@ -473,7 +611,8 @@ int main(void) {
             int minv = (int)(cpuLoadMeter.GetMinCpuLoad() * 100.0f + 0.5f);
             int maxv = (int)(cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
 
-            hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+            //hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+            hardware.seed.PrintLine("tick %d%%  odd: %d%%", globalClock.tickCount, odd_beat);
 
         }
 
@@ -673,6 +812,5 @@ int main(void) {
                 }
             }
         }
-
     }
 }
