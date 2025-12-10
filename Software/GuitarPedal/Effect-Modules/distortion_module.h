@@ -43,23 +43,22 @@ class DistortionModule : public BaseEffectModule {
     float GetBrightnessForLED(int led_id) const override;
 
   private:
-    float ProcessTiltToneControl(float in);
     void InitializeFilters();
     float hardClipping(float input, float threshold);
     float diodeClipping(float input, float threshold);
     float softClipping(float input, float gain);
     float fuzzEffect(float input, float intensity);
     float tubeSaturation(float input, float gain);
-    float multiStage(float sample, float drive);
+    float multiStage(float sample);
     float dynamicPreFilterCutoff(float inputEnergy);
-    void processDistortion(float &sample, const float &gain, const int &clippingType, const float &intensity);
+    void processDistortion(float &sample, const int &clippingType, const float &intensity);
     void normalizeVolume(float &sample, int clippingType);
 
     float m_levelMin = 0.0f;
     float m_levelMax = 1.0f;
 
     float m_gainMin = 1.0f;
-    float m_gainMax = 15.0f;
+    float m_gainMax = 8.0f;
 
     Tone m_tone;
 

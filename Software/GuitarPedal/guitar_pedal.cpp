@@ -284,7 +284,7 @@ int main(void) {
     auto* delay         = new DelayModule();
     auto* distortion    = new DistortionModule();
     auto* pre_eq        = new FilterModule();
-    auto* post_eq        = new FilterModule();
+    auto* post_eq       = new FilterModule();
     auto* pitch_router  = new EffectRouterModule();
     auto* pitch_shifter = new PitchShifterModule();
 
@@ -300,7 +300,7 @@ int main(void) {
 
     distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
-    distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 1);
+    distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 0);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
     pre_eq->SetParameterAsBool(FilterModule::HP_MODE, true);
@@ -373,8 +373,10 @@ int main(void) {
     knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});*/
 
     knobRoutes[0].push_back({distortion, DistortionModule::GAIN});
-    knobRoutes[0].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
-    
+    knobRoutes[1].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
+    knobRoutes[2].push_back({distortion, DistortionModule::INTENSITY});
+    knobRoutes[3].push_back({post_eq, FilterModule::CUTOFF});
+
     /*knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
     knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
     knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});

@@ -169,14 +169,29 @@ float DistortionModule::tubeSaturation(float input, float gain) {
     return fast_atan(input * gain);
 }
 
-float DistortionModule::multiStage(float sample, float drive) {
-    // Clamp to a sane range
-    const float g = drive;//std::clamp(drive, 0.0f, 4.0f);
+float bell(float x, float minPos, float depth)
+{
+    float m = minPos;                // where the minimum is, e.g. 0.7
+    float h = depth;                 // depth of the dip, e.g. 0.6
+
+    float denom = (x < m ? m : (1.0f - m));
+    float t = (x - m) / denom;       // normalized distance from the minimum
+
+    return 1.0f - h * (1.0f - t * t);
+}
+
+float DistortionModule::multiStage(float sample) {
+    const float gain = GetParameterAsFloat(GAIN);
+    const float g = m_gainMin + (gain * (m_gainMax - m_gainMin));
+
+    sample *= g;
 
     // Internal stage gains: all moderate, decreasing slightly per stage
-    const float d1 = 0.80f * g;  // first stage: main shaping
-    const float d2 = 0.67f * g;  // second stage: additional compression
-    const float d3 = 0.56f * g;  // third stage: "power amp"
+    const float d1 = 0.80f;  // first stage: main shaping
+    const float d2 = 0.67f;  // second stage: additional compression
+    const float d3 = 0.56f;  // third stage: "power amp"
+
+    const float unity = 1.0f / (g * g * d1 * d2 * d3);
 
     // Envelope-based bias: no bias for very low levels
     float env       = m_env;               // from existing envelope follower
@@ -187,34 +202,29 @@ float DistortionModule::multiStage(float sample, float drive) {
     const float bias = 0.005f * env_norm;
 
     // Stage 1: gentle soft clip with slight positive bias
-    float s1 = softClipping(sample + bias, d1);
+    float s1 = softClipping(sample + bias, d1 * g);
 
     // Stage 2: another soft clip, partially recentre around zero
-    float s2 = softClipping(s1 - 0.5f * bias, d2);
+    float s2 = softClipping(s1 - 0.5f * bias, d2 * g);
 
     // Stage 3: atan as "power amp" stage
-    float s3 = tubeSaturation(s2, d3);
+    float s3 = tubeSaturation(s2, d3 * g);
 
-    return s3;
+    // Scale to have no volume change at unity gain and compensate for volume increase at 25% gain.
+    return s3 * unity * bell(gain, 0.25f, 0.5f);
 }
 
 float DistortionModule::dynamicPreFilterCutoff(float inputEnergy) {
-    return preFilterCutoffBase + (preFilterCutoffMax - preFilterCutoffBase) * std::tanh(inputEnergy);
+    return preFilterCutoffBase + (preFilterCutoffMax - preFilterCutoffBase) * fast_tanh(inputEnergy);
 }
 
 void DistortionModule::processDistortion(float &sample,           // Sample to process
-                        const float &gain,       // Gain
                         const int &clippingType, // Clipping type
                         const float &intensity  // Intensity
                         ) {
-    sample *= gain;
-
     switch (clippingType) {
     case 0: // Hard Clipping
         sample = hardClipping(sample, 1.0f - intensity);
-        break;
-    case 1: // Soft Clipping
-        sample = softClipping(sample, gain);
         break;
     case 2: // Fuzz
         sample = fuzzEffect(sample, intensity * 10.0f);
@@ -223,7 +233,7 @@ void DistortionModule::processDistortion(float &sample,           // Sample to p
         sample = tubeSaturation(sample, intensity * 10.0f);
         break;
     case 4: // Multi-stage
-        sample = multiStage(sample, gain);
+        sample = multiStage(sample);
         break;
     case 5: // Diode Clipping
         sample = hardClipping(sample, 1.0f - intensity);
@@ -246,7 +256,6 @@ void DistortionModule::normalizeVolume(float &sample, int clippingType) {
         sample *= 0.9f;
         break;
     case 4: // Multi-stage
-        sample *= 0.5f;
         break;
     case 5: // Diode Clipping
         sample *= 1.8f;
@@ -256,11 +265,10 @@ void DistortionModule::normalizeVolume(float &sample, int clippingType) {
 
 void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     if (m_isEnabled) {
-        const float gain = m_gainMin + (GetParameterAsFloat(GAIN) * (m_gainMax - m_gainMin));
         const int clippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
         const float intensity = GetParameterAsFloat(INTENSITY);
         const float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
-        float mix = GetParameterAsFloat(MIX);
+        const float mix = GetParameterAsFloat(MIX);
 
         // constant-power crossfade
         const float a = sqrtf(1.0f - mix);
@@ -282,9 +290,6 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
 
             distorted = preFilter(distorted);
 
-            // Reduce signal amplitude before clipping
-            distorted = distorted * 0.5f;
-
             if (m_oversampling) {
                 // zero-stuff oversampling of a single sample
                 for (int j = 0; j < oversamplingFactor; ++j)
@@ -295,7 +300,7 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
                     os_sample = upsamplingLowpassFilter(os_sample);
 
                     // nonlinear + post-filter
-                    processDistortion(os_sample, gain, clippingType, intensity);
+                    processDistortion(os_sample, clippingType, intensity);
                     os_sample = postFilter(os_sample);
 
                     m_os_buffer[j] = os_sample;
@@ -309,18 +314,15 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
             }
             else
             {
-                processDistortion(distorted, gain, clippingType, intensity);
+                processDistortion(distorted, clippingType, intensity);
                 distorted = postFilter(distorted);
             }
 
             // Normalize the volume between the types of distortion
             normalizeVolume(distorted, clippingType);
 
-            // Apply tilt-tone filter
-            const float filter_out = ProcessTiltToneControl(distorted);
-
             const float clean = in[0][i];
-            const float wet   = filter_out * level;
+            const float wet   = distorted * level;
 
             out[0][i]  = a * clean + b * wet;
             out[1][i] = out[0][i];
@@ -331,19 +333,6 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
 void DistortionModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     // Calculate the mono effect
     ProcessMonoBlock(in, out, size);
-}
-
-float DistortionModule::ProcessTiltToneControl(float input) {
-    volatile const float toneAmount = GetParameterAsFloat(TONE);
-
-    // Process input with one-pole low-pass
-    const float lp = m_tone.Process(input);
-
-    // Compute the high-passed portion
-    const float hp = input - lp;
-
-    // Crossfade: toneAmount=0 => all LP (more bass), toneAmount=1 => all HP (more treble)
-    return lp * (1.f - toneAmount) + hp * toneAmount;
 }
 
 float DistortionModule::GetBrightnessForLED(int led_id) const {
