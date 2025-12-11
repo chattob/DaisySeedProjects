@@ -434,7 +434,6 @@ int main(void) {
     auto* pitch_shifter = new PitchShifterModule();
 
     // Fix some effect parameters
-    // delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
     delay->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
@@ -466,11 +465,11 @@ int main(void) {
 
     glooper = looper;
 
+    effectChain.push_back(pitch_router);
     effectChain.push_back(delay);
     effectChain.push_back(pre_eq);
     effectChain.push_back(distortion);
     effectChain.push_back(post_eq);
-    //effectChain.push_back(pitch_router);
     
     glooper->Init(sample_rate);
 
@@ -491,25 +490,21 @@ int main(void) {
     switchRoutes.resize(hardware.GetSwitchCount());
 
     // Setup knob routes
-    /*knobRoutes[0].push_back({looper, LooperModule::LAYER});
+    knobRoutes[0].push_back({looper, LooperModule::LAYER});
 
-    knobRoutes[1].push_back({looper, LooperModule::FADING, 1.0f, 0.0f});
+    knobRoutes[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
     knobRoutes[2].push_back({looper, LooperModule::SPEED});
     knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
-    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, 1.0f, -1.0f});
-    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, -1.0f, 1.0f});
+    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 2 * (0.5f - x); }});
 
-    knobRoutes[3].push_back({looper, LooperModule::SLICE});*/
+    knobRoutes[3].push_back({looper, LooperModule::SLICE});
 
     knobRoutes[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     knobRoutes[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    /*knobRoutes[5].push_back({distortion, DistortionModule::GAIN, 0.0f, 0.8f});
-    knobRoutes[5].push_back({distortion, DistortionModule::INTENSITY, 0.0f, 0.8f});
-    knobRoutes[5].push_back({distortion, DistortionModule::MIX, 0.0f, 0.8f});
-    knobRoutes[5].push_back({distortion, DistortionModule::LEVEL, 1.0f, 0.15f});
-    knobRoutes[5].push_back({distortion, DistortionModule::TONE, 0.5f, 0.4f});*/
+    knobRoutes[5].push_back({distortion, DistortionModule::GAIN});
+    
 
     /*knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
     knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
@@ -517,18 +512,15 @@ int main(void) {
     knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
     knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});*/
 
-    knobRoutes[0].push_back({distortion, DistortionModule::GAIN});
+    /*knobRoutes[0].push_back({distortion, DistortionModule::GAIN});
     knobRoutes[1].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
     knobRoutes[2].push_back({distortion, DistortionModule::INTENSITY});
-    knobRoutes[3].push_back({post_eq, FilterModule::CUTOFF});
+    knobRoutes[3].push_back({post_eq, FilterModule::CUTOFF});*/
 
     /*knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
     knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
     knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
     knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
-
-    // 1: layers, 2: fading, 3: stability/bitcrusher, 4: slice/stretch, 5: speed/pitch, 6: distortion
-    // A: single/all/direct B:fixed/flex C:
 
     int altSwitchID         = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
