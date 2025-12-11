@@ -27,6 +27,7 @@ class LooperModule : public BaseEffectModule {
         FADING,
         SPEED,
         SLICE,
+        MIDI_SYNC,
         PARAM_COUNT
     };
 
@@ -41,13 +42,19 @@ class LooperModule : public BaseEffectModule {
     void ProcessStereo(float inL, float inR) override;
     float GetBrightnessForLED(int led_id) const override;
     void SetParameterAsMagnitude(int parameter_id, float value) override;
+    inline void SetClockBeat() {clock_beat_ = true;};
     bool Poll() override;
+    inline size_t GetNumRecordedLayers() const {return n_recorded_layers_;};
+    inline bool IsRecording() const {return is_recording_;};
 
   private:
     float output_;
     size_t loop_length_ = 0;
     float loop_length_f_ = 0.0f;
     size_t mod = 0;
+    bool armed_recording_ = false;
+    bool armed_stop_ = false;
+    bool clock_beat_ = false;
     bool is_recording_ = false;
     size_t recording_layer_ = 0;
     bool is_playing_ = false;

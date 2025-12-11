@@ -4,7 +4,7 @@ using namespace bkshepherd;
 
 float DSY_SDRAM_BSS LooperModule::buffer_[kNumLayers][kMaxBufferSize];
 
-static const int s_paramCount = 4;
+static const int s_paramCount = 5;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Layer",
@@ -35,6 +35,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
+        knobMapping : -1,
+        midiCCMapping : 15
+    },
+    {
+        name : "Midi Sync",
+        valueType : ParameterValueType::Bool,
+        valueBinCount : 0,
+        defaultValue : {.uint_value = 0},
         knobMapping : -1,
         midiCCMapping : 15
     },
@@ -138,61 +146,16 @@ void LooperModule::BypassFootswitchPressed(){
             recording_layer_ = target_layer;
         }
 
-        is_recording_ = true;
-        is_playing_ = true;
+        clock_beat_ = false;
+        armed_recording_ = true;
     } else {
         n_recorded_layers_ = std::min(static_cast<uint8_t>(recording_layer_ + 1), static_cast<uint8_t>(kNumLayers));
         if (recording_layer_ == (kNumLayers - 1)) {
             SquashLayers();
         }
 
-        is_recording_ = false;
-        is_playing_ = true;
-
-        if (first_layer_) {
-            selected_layer_ = 0;
-            first_layer_ = false;
-            mod = loop_length_;
-            loop_length_ = 0;
-        } else {
-            selected_layer_ = std::min<size_t>(selected_layer_ + 1, kNumLayers - 1);
-        }
-
-        // Attempt to start saving, if the SD is OK and not already busy.
-        if (!m_sd_writer.HasError() && !m_sd_writer.IsBusy()) {
-            char loop_name[30];
-            size_t redo_index = 0;
-            FRESULT stat_res;
-            while (true) {
-                std::snprintf(loop_name, sizeof(loop_name),
-                        "L%u_%u.wav", recording_layer_, static_cast<unsigned>(redo_index));
-
-                stat_res = f_stat(loop_name, NULL);
-
-                if (stat_res == FR_NO_FILE) {
-                    // filename does not exist → OK to use
-                    break;
-                }
-
-                // SD card missing / I/O error / no filesystem
-                if (stat_res == FR_NOT_READY ||
-                    stat_res == FR_DISK_ERR  ||
-                    stat_res == FR_NO_FILESYSTEM)
-                {
-                    m_sd_writer.MarkCardError();
-                    saving_to_sd_ = false;
-                    goto after_sd;   // abort SD saving, keep audio running
-                }
-
-                // file exists → try next index
-                redo_index++;
-            }
-            
-            saving_to_sd_ = m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
-        }
-        
-        after_sd:
-            recording_layer_ = 0;
+        clock_beat_ = false;
+        armed_stop_ = true;
     }
 };
 
@@ -273,6 +236,84 @@ void LooperModule::ProcessStereo(float inL, float inR) {
 }
 
 bool LooperModule::Poll() {
+    if (armed_recording_) {
+        if (GetParameterAsBool(MIDI_SYNC)) {
+            if(clock_beat_) {
+                armed_recording_ = false;
+                clock_beat_ = false;
+                is_recording_ = true;
+                is_playing_ = true;
+            }
+        } else {
+            armed_recording_ = false;
+            is_recording_ = true;
+            is_playing_ = true;
+        }
+    }
+
+    bool immediate_stop = false;
+    
+    if (armed_stop_) {
+        if (GetParameterAsBool(MIDI_SYNC)) {
+            if(clock_beat_) {
+                clock_beat_ = false;
+                immediate_stop = true;
+            }
+        } else {
+            immediate_stop = true;
+        }
+    }
+
+    if (immediate_stop) {
+        armed_stop_ = false;
+        is_recording_ = false;
+        is_playing_ = true;
+
+        if (first_layer_) {
+            selected_layer_ = 0;
+            first_layer_ = false;
+            mod = loop_length_;
+            loop_length_ = 0;
+        } else {
+            selected_layer_ = std::min<size_t>(selected_layer_ + 1, kNumLayers - 1);
+        }
+
+        // Attempt to start saving, if the SD is OK and not already busy.
+        if (!m_sd_writer.HasError() && !m_sd_writer.IsBusy()) {
+            char loop_name[30];
+            size_t redo_index = 0;
+            FRESULT stat_res;
+            while (true) {
+                std::snprintf(loop_name, sizeof(loop_name),
+                        "L%u_%u.wav", recording_layer_, static_cast<unsigned>(redo_index));
+
+                stat_res = f_stat(loop_name, NULL);
+
+                if (stat_res == FR_NO_FILE) {
+                    // filename does not exist → OK to use
+                    break;
+                }
+
+                // SD card missing / I/O error / no filesystem
+                if (stat_res == FR_NOT_READY ||
+                    stat_res == FR_DISK_ERR  ||
+                    stat_res == FR_NO_FILESYSTEM)
+                {
+                    m_sd_writer.MarkCardError();
+                    saving_to_sd_ = false;
+                    goto after_sd;   // abort SD saving, keep audio running
+                }
+
+                // file exists → try next index
+                redo_index++;
+            }
+            saving_to_sd_ = m_sd_writer.StartWrite(loop_name, m_cfg, buffer_[recording_layer_], mod);
+        }
+        
+        after_sd:
+            recording_layer_ = 0;
+    }
+
     if (m_sd_writer.HasError())
     {
         saving_to_sd_ = false;
@@ -320,6 +361,15 @@ float LooperModule::GetBrightnessForLED(int led_id) const
     // 0. SD write indicator: fast blink on LED 0 while saving
     // --------------------------------------------------------------------
     if (led_id == 0 && saving_to_sd_)
+    {
+        bool on = ((now_ms / BLINK_INTERVAL_MS) % 2) == 0;
+        return on ? 1.0f : 0.0f;
+    }
+
+    // --------------------------------------------------------------------
+    // 0. Midi clock sync: fast blink on LED 0 while waiting for next beat
+    // --------------------------------------------------------------------
+    if (led_id == 0 && armed_recording_) 
     {
         bool on = ((now_ms / BLINK_INTERVAL_MS) % 2) == 0;
         return on ? 1.0f : 0.0f;

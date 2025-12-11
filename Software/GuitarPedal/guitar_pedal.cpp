@@ -73,7 +73,7 @@ struct MidiClockState
     bool     running    = false;
 };
 MidiClockState globalClock;
-bool odd_beat = false;
+bool globalBeatLightOn = false;
 
 bool isCrossFading = false;
 bool isCrossFadingForward = true; // True goes Source->Target, False goes Target->Source
@@ -154,27 +154,33 @@ void HandleMidiMessage(MidiEvent m) {
     if (m.type == SystemRealTime) {
         switch (m.srt_type) {
         case TimingClock:
-            if(globalClock.running)
+            if (globalClock.running){
                 globalClock.tickCount++;
 
-                // detect BEAT here, per tick
-                if(globalClock.tickCount % 24 == 0)
-                {
-                    odd_beat = !odd_beat; // toggle every quarter note
+                if(globalClock.tickCount % 24 == 0) {
+                    glooper->SetClockBeat();
                 }
+
+                // detect BEAT here, per tick
+                if(globalClock.tickCount % 24 < 8){
+                    globalBeatLightOn = true;
+                } else {
+                    globalBeatLightOn = false;
+                }
+            }
             break;
 
         case Start:
             globalClock.tickCount = 0;
-            globalClock.running    = true;
+            globalClock.running = true;
             break;
 
         case Continue:
-            globalClock.running    = true;
+            globalClock.running = true;
             break;
 
         case Stop:
-            globalClock.running    = false;
+            globalClock.running = false;
             break;
 
         default:
@@ -189,46 +195,46 @@ void HandleMidiMessage(MidiEvent m) {
     }
 
     switch (m.type) {
-    case NoteOn: {
-        /*if (activeEffect != NULL) {
-            NoteOnEvent p = m.AsNoteOn();
-            activeEffect->OnNoteOn(p.note, p.velocity);
-        }*/
-        break;
-    }
-    case NoteOff: {
-        /*if (activeEffect != NULL) {
-            NoteOnEvent p = m.AsNoteOn();
-            activeEffect->OnNoteOff(p.note, p.velocity);
-        }*/
-        break;
-    }
-    case ControlChange: {
-        /*if (activeEffect != nullptr) {
-            ControlChangeEvent p = m.AsControlChange();
+        case NoteOn: {
+            /*if (activeEffect != NULL) {
+                NoteOnEvent p = m.AsNoteOn();
+                activeEffect->OnNoteOn(p.note, p.velocity);
+            }*/
+            break;
+        }
+        case NoteOff: {
+            /*if (activeEffect != NULL) {
+                NoteOnEvent p = m.AsNoteOn();
+                activeEffect->OnNoteOff(p.note, p.velocity);
+            }*/
+            break;
+        }
+        case ControlChange: {
+            /*if (activeEffect != nullptr) {
+                ControlChangeEvent p = m.AsControlChange();
 
-            // Notify the activeEffect to handle this midi cc / value
-            activeEffect->MidiCCValueNotification(p.control_number, p.value);
+                // Notify the activeEffect to handle this midi cc / value
+                activeEffect->MidiCCValueNotification(p.control_number, p.value);
 
-            // Notify the UI to update if this CC message was mapped to an EffectParameter
-            int effectParamID = activeEffect->GetMappedParameterIDForMidiCC(p.control_number);
+                // Notify the UI to update if this CC message was mapped to an EffectParameter
+                int effectParamID = activeEffect->GetMappedParameterIDForMidiCC(p.control_number);
 
-            if (effectParamID != -1) {
-                guitarPedalUI.UpdateActiveEffectParameterValue(effectParamID, true);
-            }
-        }*/
-        break;
-    }
-    case ProgramChange: {
-        /*ProgramChangeEvent p = m.AsProgramChange();
+                if (effectParamID != -1) {
+                    guitarPedalUI.UpdateActiveEffectParameterValue(effectParamID, true);
+                }
+            }*/
+            break;
+        }
+        case ProgramChange: {
+            /*ProgramChangeEvent p = m.AsProgramChange();
 
-        if (p.program >= 0 && p.program < availableEffectsCount) {
-            SetActiveEffect(p.program);
-        }*/
-        break;
-    }
-    default:
-        break;
+            if (p.program >= 0 && p.program < availableEffectsCount) {
+                SetActiveEffect(p.program);
+            }*/
+            break;
+        }
+        default:
+            break;
     }
 }
 
@@ -386,11 +392,12 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     }
 
     // Update state of the LEDs
-    /*led1Brightness = glooper->GetBrightnessForLED(0);
-    led2Brightness = glooper->GetBrightnessForLED(1); */
-
-    led1Brightness = odd_beat ? 1.0f : 0.0f;
-    led2Brightness = odd_beat ? 0.0f : 1.0f;
+    if (glooper->GetNumRecordedLayers() > 0 || glooper->IsRecording()) {
+        led1Brightness = glooper->GetBrightnessForLED(0);
+    } else {
+        led1Brightness = globalBeatLightOn ? 1.0f : 0.0f;
+    }
+    led2Brightness = glooper->GetBrightnessForLED(1);
 
     // Handle LEDs
     hardware.SetLed(0, led1Brightness);
@@ -612,9 +619,10 @@ int main(void) {
             int maxv = (int)(cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
 
             //hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
-            hardware.seed.PrintLine("tick %d%%  odd: %d%%", globalClock.tickCount, odd_beat);
-
+            hardware.seed.PrintLine("tick %d%%  odd: %d%%", globalClock.tickCount, globalBeatLightOn);
         }
+
+        glooper->SetParameterAsBool(LooperModule::MIDI_SYNC, globalClock.running); 
 
         // Run polling action.
         bool res = false;
