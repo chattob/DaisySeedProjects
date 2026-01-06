@@ -149,7 +149,7 @@ uint32_t BaseEffectModule::GetParameterRaw(int parameter_id) const {
 }
 
 float BaseEffectModule::GetParameterAsFloat(int parameter_id) const {
-    if (parameter_id >= 0 || parameter_id < m_paramCount) {
+    if (parameter_id >= 0 && parameter_id < m_paramCount) {
         float ret;
         uint32_t tmp = m_params[parameter_id];
         std::memcpy(&ret, &tmp, sizeof(float));
@@ -220,7 +220,7 @@ void BaseEffectModule::OnNoteOff(float notenumber, float velocity) {
 }
 
 int BaseEffectModule::GetParameterMin(int parameter_id) const {
-    if (m_paramMetaData != nullptr && parameter_id < m_paramCount) {
+    if (m_paramMetaData != nullptr && parameter_id >= 0 && parameter_id < m_paramCount) {
         return m_paramMetaData[parameter_id].minValue;
     }
 
@@ -228,7 +228,7 @@ int BaseEffectModule::GetParameterMin(int parameter_id) const {
 }
 
 int BaseEffectModule::GetParameterMax(int parameter_id) const {
-    if (m_paramMetaData != nullptr && parameter_id < m_paramCount) {
+    if (m_paramMetaData != nullptr && parameter_id >= 0 && parameter_id < m_paramCount) {
         return m_paramMetaData[parameter_id].maxValue;
     }
 
@@ -236,7 +236,7 @@ int BaseEffectModule::GetParameterMax(int parameter_id) const {
 }
 
 float BaseEffectModule::GetParameterFineStepSize(int parameter_id) const {
-    if (m_paramMetaData != nullptr && parameter_id < m_paramCount) {
+    if (m_paramMetaData != nullptr && parameter_id >= 0 && parameter_id < m_paramCount) {
         return m_paramMetaData[parameter_id].fineStepSize;
     }
     return 0.01f;
@@ -333,7 +333,7 @@ void BaseEffectModule::SetParameterAsMagnitude(int parameter_id, float value) {
 }
 
 void BaseEffectModule::SetParameterAsFloat(int parameter_id, float value) {
-    if (parameter_id >= 0 || parameter_id < m_paramCount) {
+    if (parameter_id >= 0 && parameter_id < m_paramCount) {
         uint32_t tmp;
         std::memcpy(&tmp, &value, sizeof(float));
 
