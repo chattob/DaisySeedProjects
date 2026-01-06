@@ -2,7 +2,7 @@
 
 using namespace bkshepherd;
 
-static const int s_switchParamCount = 8;
+static const int s_switchParamCount = 2;
 static const PreferredSwitchMetaData s_switchMetaData[s_switchParamCount] = {
     {sfType : SpecialFunctionType::Bypass, switchMapping : 2}, {sfType : SpecialFunctionType::Alternate, switchMapping : 3}};
 

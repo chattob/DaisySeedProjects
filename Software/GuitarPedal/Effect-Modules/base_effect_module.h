@@ -54,6 +54,11 @@ class BaseEffectModule {
   public:
     BaseEffectModule();
     virtual ~BaseEffectModule();
+    // Prevent accidental shallow copies of the owning parameter buffer.
+    BaseEffectModule(const BaseEffectModule &) = delete;
+    BaseEffectModule &operator=(const BaseEffectModule &) = delete;
+    BaseEffectModule(BaseEffectModule &&) = delete;
+    BaseEffectModule &operator=(BaseEffectModule &&) = delete;
 
     /** Initializes the module
         \param sample_rate  The sample rate of the audio engine being run.

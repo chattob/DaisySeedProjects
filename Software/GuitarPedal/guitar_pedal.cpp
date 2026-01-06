@@ -16,73 +16,93 @@ using namespace daisy;
 using namespace daisysp;
 using namespace bkshepherd;
 
-GuitarPedal125B hardware;
+// Hardware & Core Objects
+GuitarPedal125B g_hardware;
 constexpr size_t kBlockSize = 48;
+CpuLoadMeter g_cpuLoadMeter;
 
-// Effect Related Variables
-std::vector<BaseEffectModule*> effectChain;
-LooperModule* glooper = nullptr;
-bool preFXmode = false;
+// Effect Chain State
+struct {
+    std::vector<BaseEffectModule*> chain;
+    LooperModule* looper = nullptr;
+    bool preFXmode = false;
+} g_effects;
 
-// Hardware Related Variables
-bool effectOn = false;
-bool muteOn = false;
-float muteOffTransitionTimeInSeconds = 0.02f;
-int muteOffTransitionTimeInSamples;
-int samplesTilMuteOff;
+// Bypass/Mute State Machine
+struct {
+    bool effectOn = false;
+    bool muteOn = false;
+    float muteOffTransitionTimeInSeconds = 0.02f;
+    int muteOffTransitionTimeInSamples;
+    int samplesTilMuteOff;
 
-bool bypassOn = false;
-float bypassToggleTransitionTimeInSeconds = 0.01f;
-int bypassToggleTransitionTimeInSamples;
-int samplesTilBypassToggle;
+    bool bypassOn = false;
+    float bypassToggleTransitionTimeInSeconds = 0.01f;
+    int bypassToggleTransitionTimeInSamples;
+    int samplesTilBypassToggle;
 
-uint32_t lastTimeStampUS;
-float secondsSinceStartup = 0.0f;
+    // Quick-switch debounce
+    bool ignoreBypassSwitchUntilNextActuation = false;
+    bool effectActiveBeforeQuickSwitch = false;
+} g_bypass;
 
-// Used to debounce quick switching to/from the tuner
-bool ignoreBypassSwitchUntilNextActuation = false;
-bool effectActiveBeforeQuickSwitch = false;
+// Crossfade State
+struct {
+    bool isCrossFading = false;
+    bool isCrossFadingForward = true;
+    float transitionTimeInSeconds = 0.1f;
+    int transitionTimeInSamples;
+    int samplesTilComplete;
+    CrossFade left, right;
+} g_crossfade;
 
-// Pot Monitoring Variables
-bool knobValuesInitialized = false;
-float knobValueDeadZone = 0.05f; // Dead zone on both ends of the raw knob range
-float knobValueChangeTolerance = 1.0f / 256.0f;
-float knobValueIdleTimeInSeconds = 1.0f;
-volatile bool *knobValueCacheChanged = nullptr;
-float *knobValueCache = nullptr;
-float *knobValueTimeTilIdle = nullptr;
+// General Timing
+struct {
+    uint32_t lastTimeStampUS;
+    float secondsSinceStartup = 0.0f;
+} g_timing;
 
-// Switch Monitoring Variables
-float switchEnabledIdleTimeInSeconds = 2.0f;
-bool *switchEnabledCache = nullptr;
-bool *switchDoubleEnabledCache = nullptr;
-float *switchEnabledTimeTilIdle = nullptr;
-bool *switchesHeldFired = nullptr;
+// Knob Monitoring
+struct {
+    bool initialized = false;
+    float deadZone = 0.05f;
+    float changeTolerance = 1.0f / 256.0f;
+    float idleTimeInSeconds = 1.0f;
+    volatile bool* cacheChanged = nullptr;
+    float* cache = nullptr;
+    float* timeTilIdle = nullptr;
+} g_knobs;
 
-// Tempo
-bool needToChangeTempo = false;
-uint32_t globalTempoBPM = 0;
+// Switch Monitoring
+struct {
+    float idleTimeInSeconds = 2.0f;
+    bool* enabledCache = nullptr;
+    bool* doubleEnabledCache = nullptr;
+    float* timeTilIdle = nullptr;
+    bool* heldFired = nullptr;
+} g_switches;
 
-// Midi
-bool globalMidiEnabled = true;
-bool globalMidiThrough = true;
-int globalMidiChannel = 1;
-struct MidiClockState
-{
-    uint32_t tickCount = 0;   // how many TimingClock ticks since Start
-    bool     running    = false;
+// Tempo State
+struct {
+    bool needToChange = false;
+    uint32_t bpm = 0;
+} g_tempo;
+
+// MIDI State
+struct MidiClockState {
+    uint32_t tickCount = 0;
+    bool running = false;
 };
-MidiClockState globalClock;
-bool globalBeatLightOn = false;
 
-bool isCrossFading = false;
-bool isCrossFadingForward = true; // True goes Source->Target, False goes Target->Source
-CrossFade crossFaderLeft, crossFaderRight;
-float crossFaderTransitionTimeInSeconds = 0.1f;
-int crossFaderTransitionTimeInSamples;
-int samplesTilCrossFadingComplete;
-CpuLoadMeter cpuLoadMeter;
+struct {
+    bool enabled = true;
+    bool through = true;
+    int channel = 1;
+    MidiClockState clock;
+    bool beatLightOn = false;
+} g_midi;
 
+// Knob/Switch Routing Types & State
 typedef float (*KnobMapFn)(float);
 
 static constexpr KnobMapFn kDefaultMap = [](float x) {
@@ -90,12 +110,10 @@ static constexpr KnobMapFn kDefaultMap = [](float x) {
 };
 
 struct KnobRoute {
-    BaseEffectModule*   effect;
-    int                 paramId;   // index into that effect's parameter array
-    KnobMapFn           mapper = kDefaultMap;   // default linear
+    BaseEffectModule* effect;
+    int paramId;
+    KnobMapFn mapper = kDefaultMap;
 };
-
-std::vector<std::vector<KnobRoute>> knobRoutes;
 
 enum class SwitchAction {
     AltPressed,
@@ -114,14 +132,17 @@ enum class SwitchAction {
 
 struct SwitchRoute {
     BaseEffectModule* effect;
-    SwitchAction      action;
+    SwitchAction action;
 };
 
-std::vector<std::vector<SwitchRoute>> switchRoutes;
+struct {
+    std::vector<std::vector<KnobRoute>> knobs;
+    std::vector<std::vector<SwitchRoute>> switches;
+} g_routing;
 
 // Typical Switch case for Message Type.
 void HandleMidiMessage(MidiEvent m) {
-    if (!hardware.SupportsMidi()) {
+    if (!g_hardware.SupportsMidi()) {
         return;
     }
 
@@ -129,12 +150,12 @@ void HandleMidiMessage(MidiEvent m) {
 
     // Make sure the settings midi channel is within the proper range
     // and convert the channel to be zero indexed instead of 1 like the setting.
-    if (globalMidiChannel >= 1 && globalMidiChannel <= 16) {
-        channel = globalMidiChannel - 1;
+    if (g_midi.channel >= 1 && g_midi.channel <= 16) {
+        channel = g_midi.channel - 1;
     }
 
     // Pass the midi message through to midi out if so desired (only handles non system event types)
-    if (globalMidiThrough && m.type < SystemCommon) {
+    if (g_midi.through && m.type < SystemCommon) {
         // Re-pack the Midi Message
         uint8_t midiData[3];
 
@@ -148,39 +169,39 @@ void HandleMidiMessage(MidiEvent m) {
             bytesToSend = 2;
         }
 
-        hardware.midi.SendMessage(midiData, sizeof(uint8_t) * bytesToSend);
+        g_hardware.midi.SendMessage(midiData, sizeof(uint8_t) * bytesToSend);
     }
 
     if (m.type == SystemRealTime) {
         switch (m.srt_type) {
         case TimingClock:
-            if (globalClock.running){
-                globalClock.tickCount++;
+            if (g_midi.clock.running){
+                g_midi.clock.tickCount++;
 
-                if(globalClock.tickCount % 24 == 0) {
-                    glooper->SetClockBeat();
+                if(g_midi.clock.tickCount % 24 == 0) {
+                    g_effects.looper->SetClockBeat();
                 }
 
                 // detect BEAT here, per tick
-                if(globalClock.tickCount % 24 < 8){
-                    globalBeatLightOn = true;
+                if(g_midi.clock.tickCount % 24 < 8){
+                    g_midi.beatLightOn = true;
                 } else {
-                    globalBeatLightOn = false;
+                    g_midi.beatLightOn = false;
                 }
             }
             break;
 
         case Start:
-            globalClock.tickCount = 0;
-            globalClock.running = true;
+            g_midi.clock.tickCount = 0;
+            g_midi.clock.running = true;
             break;
 
         case Continue:
-            globalClock.running = true;
+            g_midi.clock.running = true;
             break;
 
         case Stop:
-            globalClock.running = false;
+            g_midi.clock.running = false;
             break;
 
         default:
@@ -242,14 +263,14 @@ void HandleMidiMessage(MidiEvent m) {
 //                            AUDIO CALLBACK
 //======================================================================
 static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    cpuLoadMeter.OnBlockStart();
+    g_cpuLoadMeter.OnBlockStart();
 
     // Handle MIDI Events
-    if (hardware.SupportsMidi() && globalMidiEnabled) {
-        hardware.midi.Listen();
+    if (g_hardware.SupportsMidi() && g_midi.enabled) {
+        g_hardware.midi.Listen();
 
-        while (hardware.midi.HasEvents()) {
-            MidiEvent event = hardware.midi.PopEvent();
+        while (g_hardware.midi.HasEvents()) {
+            MidiEvent event = g_hardware.midi.PopEvent();
             HandleMidiMessage(event);
         }
     }
@@ -264,35 +285,35 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 
     // Store the previous value of the effect bypass so that we can determine if
     // we need to perform a toggle at the end of processing the switches
-    bool oldEffectOn = effectOn;
+    bool oldEffectOn = g_bypass.effectOn;
 
     // For looper, we force effect ON. Remove this line for bypassable effects.
-    effectOn = true;
+    g_bypass.effectOn = true;
 
     // Handle updating the Hardware Bypass & Muting signals
-    if (hardware.SupportsTrueBypass()) {
-        hardware.SetAudioBypass(bypassOn);
-        hardware.SetAudioMute(muteOn);
+    if (g_hardware.SupportsTrueBypass()) {
+        g_hardware.SetAudioBypass(g_bypass.bypassOn);
+        g_hardware.SetAudioMute(g_bypass.muteOn);
     } else {
-        hardware.SetAudioBypass(false);
-        hardware.SetAudioMute(false);
+        g_hardware.SetAudioBypass(false);
+        g_hardware.SetAudioMute(false);
     }
 
     // Handle Effect State being Toggled.
-    if (effectOn != oldEffectOn) {
+    if (g_bypass.effectOn != oldEffectOn) {
         // Setup the crossfade
-        isCrossFading = true;
-        samplesTilCrossFadingComplete = crossFaderTransitionTimeInSamples;
-        isCrossFadingForward = effectOn;
+        g_crossfade.isCrossFading = true;
+        g_crossfade.samplesTilComplete = g_crossfade.transitionTimeInSamples;
+        g_crossfade.isCrossFadingForward = g_bypass.effectOn;
 
         // Start the timing sequence for the Hardware Mute and Relay Bypass.
-        if (hardware.SupportsTrueBypass()) {
+        if (g_hardware.SupportsTrueBypass()) {
             // Immediately Mute the Output using the Hardware Mute.
-            muteOn = true;
+            g_bypass.muteOn = true;
 
             // Set the timing for when the bypass relay should trigger and when to unmute.
-            samplesTilMuteOff = muteOffTransitionTimeInSamples;
-            samplesTilBypassToggle = bypassToggleTransitionTimeInSamples;
+            g_bypass.samplesTilMuteOff = g_bypass.muteOffTransitionTimeInSamples;
+            g_bypass.samplesTilBypassToggle = g_bypass.bypassToggleTransitionTimeInSamples;
         }
     }
 
@@ -304,34 +325,34 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTarget[1][i] = in[1][i];
     }
 
-    if (preFXmode) {
-        if (!effectChain.empty() && (effectOn || isCrossFading)) {
-            for (auto* fx : effectChain) {
+    if (g_effects.preFXmode) {
+        if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
+            for (auto* fx : g_effects.chain) {
                 if (!fx) continue;
                 if (!fx->IsEnabled()) continue;
-                if (hardware.SupportsStereo()) {
+                if (g_hardware.SupportsStereo()) {
                     fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
                 } else {
                     fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
                 }
             }
         }
-        if (hardware.SupportsStereo()) {
-            glooper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+        if (g_hardware.SupportsStereo()) {
+            g_effects.looper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
         } else {
-            glooper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+            g_effects.looper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
         }
     } else {
-        if (hardware.SupportsStereo()) {
-            glooper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+        if (g_hardware.SupportsStereo()) {
+            g_effects.looper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
         } else {
-            glooper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+            g_effects.looper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
         }
-        if (!effectChain.empty() && (effectOn || isCrossFading)) {
-            for (auto* fx : effectChain) {
+        if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
+            for (auto* fx : g_effects.chain) {
                 if (!fx) continue;
                 if (!fx->IsEnabled()) continue;
-                if (hardware.SupportsStereo()) {
+                if (g_hardware.SupportsStereo()) {
                     fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
                 } else {
                     fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
@@ -341,37 +362,37 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     }
 
     for (size_t i = 0; i < size; i++) {
-        if (isCrossFading) {
-            float crossFadeFactor = (float)samplesTilCrossFadingComplete / (float)crossFaderTransitionTimeInSamples;
+        if (g_crossfade.isCrossFading) {
+            float crossFadeFactor = (float)g_crossfade.samplesTilComplete / (float)g_crossfade.transitionTimeInSamples;
 
-            if (isCrossFadingForward) {
+            if (g_crossfade.isCrossFadingForward) {
                 crossFadeFactor = 1.0f - crossFadeFactor;
             }
 
-            crossFaderLeft.SetPos(crossFadeFactor);
-            crossFaderRight.SetPos(crossFadeFactor);
+            g_crossfade.left.SetPos(crossFadeFactor);
+            g_crossfade.right.SetPos(crossFadeFactor);
 
-            samplesTilCrossFadingComplete -= 1;
+            g_crossfade.samplesTilComplete -= 1;
 
-            if (samplesTilCrossFadingComplete < 0) {
-                isCrossFading = false;
+            if (g_crossfade.samplesTilComplete < 0) {
+                g_crossfade.isCrossFading = false;
             }
         }
 
         // Handle Timing for the Hardware Mute and Relay Bypass
-        if (muteOn) {
+        if (g_bypass.muteOn) {
             // Decrement the Sample Counts for the timing of the mute and bypass
-            samplesTilMuteOff -= 1;
-            samplesTilBypassToggle -= 1;
+            g_bypass.samplesTilMuteOff -= 1;
+            g_bypass.samplesTilBypassToggle -= 1;
 
             // If mute time is up, turn it off.
-            if (samplesTilMuteOff < 0) {
-                muteOn = false;
+            if (g_bypass.samplesTilMuteOff < 0) {
+                g_bypass.muteOn = false;
             }
 
             // Toggle the bypass when it's time (needs to be timed to happen while things are muted, or you get an audio pop)
-            if (samplesTilBypassToggle < 0) {
-                bypassOn = !effectOn;
+            if (g_bypass.samplesTilBypassToggle < 0) {
+                g_bypass.bypassOn = !g_bypass.effectOn;
             }
         }
 
@@ -387,24 +408,24 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTargetLeft  = crossFadeTarget[0][i];
         crossFadeTargetRight = crossFadeTarget[1][i];
 
-        out[0][i] = crossFaderLeft.Process(crossFadeSourceLeft, crossFadeTargetLeft);
-        out[1][i] = crossFaderRight.Process(crossFadeSourceRight, crossFadeTargetRight);  
+        out[0][i] = g_crossfade.left.Process(crossFadeSourceLeft, crossFadeTargetLeft);
+        out[1][i] = g_crossfade.right.Process(crossFadeSourceRight, crossFadeTargetRight);  
     }
 
     // Update state of the LEDs
-    if (glooper->GetNumRecordedLayers() > 0 || glooper->IsRecording()) {
-        led1Brightness = glooper->GetBrightnessForLED(0);
+    if (g_effects.looper->GetNumRecordedLayers() > 0 || g_effects.looper->IsRecording()) {
+        led1Brightness = g_effects.looper->GetBrightnessForLED(0);
     } else {
-        led1Brightness = globalBeatLightOn ? 1.0f : 0.0f;
+        led1Brightness = g_midi.beatLightOn ? 1.0f : 0.0f;
     }
-    led2Brightness = glooper->GetBrightnessForLED(1);
+    led2Brightness = g_effects.looper->GetBrightnessForLED(1);
 
     // Handle LEDs
-    hardware.SetLed(0, led1Brightness);
-    hardware.SetLed(1, led2Brightness);
-    hardware.UpdateLeds();
+    g_hardware.SetLed(0, led1Brightness);
+    g_hardware.SetLed(1, led2Brightness);
+    g_hardware.UpdateLeds();
 
-    cpuLoadMeter.OnBlockEnd();
+    g_cpuLoadMeter.OnBlockEnd();
 }
 
 //======================================================================
@@ -413,17 +434,17 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 int main(void) {
     const bool boost = false; // true enables cpu boost (480Mhz instead of 400Mhz)
 
-    hardware.Init(kBlockSize, boost);
+    g_hardware.Init(kBlockSize, boost);
 
-    const float sample_rate = hardware.AudioSampleRate();
+    const float sample_rate = g_hardware.AudioSampleRate();
 
     // Setup CPU logging of the audio callback
-    cpuLoadMeter.Init(sample_rate, kBlockSize);
+    g_cpuLoadMeter.Init(sample_rate, kBlockSize);
 
     // Set the number of samples to use for the crossfade based on the hardware sample rate
-    muteOffTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(muteOffTransitionTimeInSeconds);
-    bypassToggleTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(bypassToggleTransitionTimeInSeconds);
-    crossFaderTransitionTimeInSamples = hardware.GetNumberOfSamplesForTime(crossFaderTransitionTimeInSeconds);
+    g_bypass.muteOffTransitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_bypass.muteOffTransitionTimeInSeconds);
+    g_bypass.bypassToggleTransitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_bypass.bypassToggleTransitionTimeInSeconds);
+    g_crossfade.transitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_crossfade.transitionTimeInSeconds);
 
     auto* looper        = new LooperModule();
     auto* delay         = new DelayModule();
@@ -463,17 +484,17 @@ int main(void) {
     pitch_shifter->SetEnabled(false);
     pitch_router->SetEnabled(true);   // router must always run
 
-    glooper = looper;
+    g_effects.looper = looper;
 
-    effectChain.push_back(pitch_router);
-    effectChain.push_back(delay);
-    effectChain.push_back(pre_eq);
-    effectChain.push_back(distortion);
-    effectChain.push_back(post_eq);
+    g_effects.chain.push_back(pitch_router);
+    g_effects.chain.push_back(delay);
+    g_effects.chain.push_back(pre_eq);
+    g_effects.chain.push_back(distortion);
+    g_effects.chain.push_back(post_eq);
     
-    glooper->Init(sample_rate);
+    g_effects.looper->Init(sample_rate);
 
-    for (auto* effect : effectChain) {
+    for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
     }
 
@@ -483,47 +504,47 @@ int main(void) {
     pitch_router->SetInner(pitch_shifter);
 
     // Size the routes to the real knob count
-    const int knobCount = hardware.GetParameterControlCount();
-    knobRoutes.resize(knobCount);
+    const int knobCount = g_hardware.GetParameterControlCount();
+    g_routing.knobs.resize(knobCount);
 
     // Size the routes to the real switches count
-    switchRoutes.resize(hardware.GetSwitchCount());
+    g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    knobRoutes[0].push_back({looper, LooperModule::LAYER});
+    g_routing.knobs[0].push_back({looper, LooperModule::LAYER});
 
-    knobRoutes[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
+    g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
-    knobRoutes[2].push_back({looper, LooperModule::SPEED});
-    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
-    knobRoutes[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 2 * (0.5f - x); }});
+    g_routing.knobs[2].push_back({looper, LooperModule::SPEED});
+    g_routing.knobs[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
+    g_routing.knobs[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 2 * (0.5f - x); }});
 
-    knobRoutes[3].push_back({looper, LooperModule::SLICE});
+    g_routing.knobs[3].push_back({looper, LooperModule::SLICE});
 
-    knobRoutes[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
-    knobRoutes[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
+    g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
+    g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    knobRoutes[5].push_back({distortion, DistortionModule::GAIN});
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});
     
 
-    /*knobRoutes[0].push_back({delay, DelayModule::DELAY_MIX});
-    knobRoutes[1].push_back({delay, DelayModule::DELAY_TIME});
-    knobRoutes[2].push_back({delay, DelayModule::D_FEEDBACK});
-    knobRoutes[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
-    knobRoutes[4].push_back({delay, DelayModule::MOD_FREQ});*/
+    /*g_routing.knobs[0].push_back({delay, DelayModule::DELAY_MIX});
+    g_routing.knobs[1].push_back({delay, DelayModule::DELAY_TIME});
+    g_routing.knobs[2].push_back({delay, DelayModule::D_FEEDBACK});
+    g_routing.knobs[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
+    g_routing.knobs[4].push_back({delay, DelayModule::MOD_FREQ});*/
 
-    /*knobRoutes[0].push_back({distortion, DistortionModule::GAIN});
-    knobRoutes[1].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
-    knobRoutes[2].push_back({distortion, DistortionModule::INTENSITY});
-    knobRoutes[3].push_back({post_eq, FilterModule::CUTOFF});*/
+    /*g_routing.knobs[0].push_back({distortion, DistortionModule::GAIN});
+    g_routing.knobs[1].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
+    g_routing.knobs[2].push_back({distortion, DistortionModule::INTENSITY});
+    g_routing.knobs[3].push_back({post_eq, FilterModule::CUTOFF});*/
 
-    /*knobRoutes[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
-    knobRoutes[3].push_back({pitch_shifter, PitchShifterModule::MODE});
-    knobRoutes[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
-    knobRoutes[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
+    /*g_routing.knobs[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
+    g_routing.knobs[3].push_back({pitch_shifter, PitchShifterModule::MODE});
+    g_routing.knobs[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
+    g_routing.knobs[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
 
-    int altSwitchID         = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
-    int bypassSwitchID      = hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
+    int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
+    int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
     int triswitch_0_left    = 2;
     int triswitch_0_right   = 3;
     int triswitch_1_left    = 4;
@@ -532,164 +553,164 @@ int main(void) {
     int triswitch_2_right   = 7;
 
     // Alternate footswitch: toggle delay pressed & looper held
-    switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltPressed});
-    switchRoutes[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
+    g_routing.switches[altSwitchID].push_back({looper, SwitchAction::AltPressed});
+    g_routing.switches[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
 
-    switchRoutes[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
-    switchRoutes[altSwitchID].push_back({pre_eq, SwitchAction::BypassPressed});
-    switchRoutes[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
-    switchRoutes[altSwitchID].push_back({post_eq, SwitchAction::BypassPressed});
-    switchRoutes[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({pre_eq, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({post_eq, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
 
     // Main/bypass footswitch
-    switchRoutes[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
+    g_routing.switches[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
 
     // Triswitch 1 left: ON/OFF for pitch-shifter routing
-    switchRoutes[triswitch_1_left].push_back({looper, SwitchAction::Id2Pressed});
-    switchRoutes[triswitch_1_left].push_back({looper, SwitchAction::Id2Released});
-    switchRoutes[triswitch_1_left].push_back({pitch_router, SwitchAction::AltPressed});
-    switchRoutes[triswitch_1_left].push_back({pitch_router, SwitchAction::AltReleased});
+    g_routing.switches[triswitch_1_left].push_back({looper, SwitchAction::Id2Pressed});
+    g_routing.switches[triswitch_1_left].push_back({looper, SwitchAction::Id2Released});
+    g_routing.switches[triswitch_1_left].push_back({pitch_router, SwitchAction::AltPressed});
+    g_routing.switches[triswitch_1_left].push_back({pitch_router, SwitchAction::AltReleased});
 
     // Triswitch 2: left = pre-fx, right/mid = post-fx
-    switchRoutes[triswitch_2_left].push_back({nullptr, SwitchAction::PrePostModeSelect});
+    g_routing.switches[triswitch_2_left].push_back({nullptr, SwitchAction::PrePostModeSelect});
 
     // Setup Relay Bypass State
-    if (hardware.SupportsTrueBypass()) {
-        bypassOn = true;
+    if (g_hardware.SupportsTrueBypass()) {
+        g_bypass.bypassOn = true;
     }
 
     // Init the Knob Monitoring System
-    knobValueCacheChanged = new bool[hardware.GetParameterControlCount()];
-    knobValueCache = new float[hardware.GetParameterControlCount()];
-    knobValueTimeTilIdle = new float[hardware.GetParameterControlCount()];
+    g_knobs.cacheChanged = new bool[g_hardware.GetParameterControlCount()];
+    g_knobs.cache = new float[g_hardware.GetParameterControlCount()];
+    g_knobs.timeTilIdle = new float[g_hardware.GetParameterControlCount()];
 
     // Init the Switch Monitoring System
-    switchEnabledCache = new bool[hardware.GetSwitchCount()];
-    switchDoubleEnabledCache = new bool[hardware.GetSwitchCount()];
-    switchEnabledTimeTilIdle = new float[hardware.GetSwitchCount()];
-    switchesHeldFired = new bool[hardware.GetSwitchCount()];
+    g_switches.enabledCache = new bool[g_hardware.GetSwitchCount()];
+    g_switches.doubleEnabledCache = new bool[g_hardware.GetSwitchCount()];
+    g_switches.timeTilIdle = new float[g_hardware.GetSwitchCount()];
+    g_switches.heldFired = new bool[g_hardware.GetSwitchCount()];
 
-    for (int i = 0; i < hardware.GetSwitchCount(); i++) {
-        switchEnabledCache[i] = false;
-        switchDoubleEnabledCache[i] = false;
-        switchEnabledTimeTilIdle[i] = 0;
-        switchesHeldFired[i] = false;
+    for (int i = 0; i < g_hardware.GetSwitchCount(); i++) {
+        g_switches.enabledCache[i] = false;
+        g_switches.doubleEnabledCache[i] = false;
+        g_switches.timeTilIdle[i] = 0;
+        g_switches.heldFired[i] = false;
     }
 
     // Setup the cross fader
-    crossFaderLeft.Init();
-    crossFaderRight.Init();
-    crossFaderLeft.SetPos(0.0f);
-    crossFaderRight.SetPos(0.0f);
+    g_crossfade.left.Init();
+    g_crossfade.right.Init();
+    g_crossfade.left.SetPos(0.0f);
+    g_crossfade.right.SetPos(0.0f);
 
     // start callback
-    hardware.StartAdc();
-    hardware.StartAudio(AudioCallback);
+    g_hardware.StartAdc();
+    g_hardware.StartAudio(AudioCallback);
 
     // Set initial time stamp
-    lastTimeStampUS = System::GetUs();
+    g_timing.lastTimeStampUS = System::GetUs();
 
     // Setup Debug Logging
-    hardware.seed.StartLog();
+    g_hardware.seed.StartLog();
 
     uint32_t last_print = 0;
 
     while (1) {
         // Handle Clock Time
         uint32_t currentTimeStampUS = System::GetUs();
-        uint32_t elapsedTimeStampUS = currentTimeStampUS - lastTimeStampUS;
-        lastTimeStampUS = currentTimeStampUS;
+        uint32_t elapsedTimeStampUS = currentTimeStampUS - g_timing.lastTimeStampUS;
+        g_timing.lastTimeStampUS = currentTimeStampUS;
         float elapsedTimeInSeconds = (elapsedTimeStampUS / 1000000.0f);
-        secondsSinceStartup = secondsSinceStartup + elapsedTimeInSeconds;
+        g_timing.secondsSinceStartup = g_timing.secondsSinceStartup + elapsedTimeInSeconds;
 
         // print every 500 ms
         if(currentTimeStampUS - last_print > 500000)
         {
             last_print = currentTimeStampUS;
-            int avg = (int)(cpuLoadMeter.GetAvgCpuLoad() * 100.0f + 0.5f);
-            int minv = (int)(cpuLoadMeter.GetMinCpuLoad() * 100.0f + 0.5f);
-            int maxv = (int)(cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
+            int avg = (int)(g_cpuLoadMeter.GetAvgCpuLoad() * 100.0f + 0.5f);
+            int minv = (int)(g_cpuLoadMeter.GetMinCpuLoad() * 100.0f + 0.5f);
+            int maxv = (int)(g_cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
 
-            //hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
-            hardware.seed.PrintLine("tick %d%%  odd: %d%%", globalClock.tickCount, globalBeatLightOn);
+            //g_hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+            g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
         }
 
-        glooper->SetParameterAsBool(LooperModule::MIDI_SYNC, globalClock.running); 
+        g_effects.looper->SetParameterAsBool(LooperModule::MIDI_SYNC, g_midi.clock.running); 
 
         // Run polling action.
         bool res = false;
-        for (auto* effect : effectChain) {
+        for (auto* effect : g_effects.chain) {
             if (!effect) continue;
             res |= effect->Poll();
         }
-        glooper->Poll();
+        g_effects.looper->Poll();
 
         // Handle Knob Changes
-        if (!knobValuesInitialized && secondsSinceStartup > 1.0f) {
+        if (!g_knobs.initialized && g_timing.secondsSinceStartup > 1.0f) {
             // Let the initial readings of the knob values settle before trying to use them.
-            knobValuesInitialized = true;
+            g_knobs.initialized = true;
         }
 
         // Handle Inputs
-        hardware.ProcessAnalogControls();
-        hardware.ProcessDigitalControls();
+        g_hardware.ProcessAnalogControls();
+        g_hardware.ProcessDigitalControls();
 
         // Process the Pots
         float knobValueRaw;
 
-        for (int i = 0; i < hardware.GetParameterControlCount(); i++) {
-            knobValueRaw = hardware.GetParameterControlValue(i);
+        for (int i = 0; i < g_hardware.GetParameterControlCount(); i++) {
+            knobValueRaw = g_hardware.GetParameterControlValue(i);
 
             // Knobs don't perfectly return values in the 0.0f - 1.0f range
             // so we will add some deadzone to either end of the knob and remap values into
             // a full 0.0f - 1.0f range.
-            if (knobValueRaw < knobValueDeadZone) {
+            if (knobValueRaw < g_knobs.deadZone) {
                 knobValueRaw = 0.0f;
-            } else if (knobValueRaw > (1.0f - knobValueDeadZone)) {
+            } else if (knobValueRaw > (1.0f - g_knobs.deadZone)) {
                 knobValueRaw = 1.0f;
             } else {
-                knobValueRaw = (knobValueRaw - knobValueDeadZone) / (1.0f - (2.0f * knobValueDeadZone));
+                knobValueRaw = (knobValueRaw - g_knobs.deadZone) / (1.0f - (2.0f * g_knobs.deadZone));
             }
 
-            if (!knobValuesInitialized) {
+            if (!g_knobs.initialized) {
                 // Initialize the knobs for the first time to whatever the current knob placements are
-                knobValueCacheChanged[i] = true;
-                knobValueTimeTilIdle[i] = 0;
-                knobValueCache[i] = knobValueRaw;
+                g_knobs.cacheChanged[i] = true;
+                g_knobs.timeTilIdle[i] = 0;
+                g_knobs.cache[i] = knobValueRaw;
             } else {
                 // If the knobs are initialized handle monitor them for changes.
-                if (knobValueTimeTilIdle[i] > 0) {
-                    knobValueTimeTilIdle[i] -= elapsedTimeInSeconds;
+                if (g_knobs.timeTilIdle[i] > 0) {
+                    g_knobs.timeTilIdle[i] -= elapsedTimeInSeconds;
 
-                    if (knobValueTimeTilIdle[i] <= 0) {
-                        knobValueTimeTilIdle[i] = 0;
-                        knobValueCacheChanged[i] = false;
+                    if (g_knobs.timeTilIdle[i] <= 0) {
+                        g_knobs.timeTilIdle[i] = 0;
+                        g_knobs.cacheChanged[i] = false;
                     }
                 }
 
                 bool knobValueChangedToleranceMet = false;
 
-                if (knobValueRaw > (knobValueCache[i] + knobValueChangeTolerance) ||
-                    knobValueRaw < (knobValueCache[i] - knobValueChangeTolerance)) {
+                if (knobValueRaw > (g_knobs.cache[i] + g_knobs.changeTolerance) ||
+                    knobValueRaw < (g_knobs.cache[i] - g_knobs.changeTolerance)) {
                     knobValueChangedToleranceMet = true;
-                    knobValueCacheChanged[i] = true;
-                    knobValueTimeTilIdle[i] = knobValueIdleTimeInSeconds;
+                    g_knobs.cacheChanged[i] = true;
+                    g_knobs.timeTilIdle[i] = g_knobs.idleTimeInSeconds;
                 }
 
-                if (knobValueChangedToleranceMet || knobValueCacheChanged[i]) {
-                    knobValueCache[i] = knobValueRaw;
+                if (knobValueChangedToleranceMet || g_knobs.cacheChanged[i]) {
+                    g_knobs.cache[i] = knobValueRaw;
                 }
             }
         }
 
         // Process the switches
-        for (int sw = 0; sw < hardware.GetSwitchCount(); ++sw) {
-            bool switchPressed  = hardware.switches[sw].RisingEdge();
-            bool switchReleased = hardware.switches[sw].FallingEdge();
-            bool switchHeld  = hardware.switches[sw].TimeHeldMs() >= 1000.f;
+        for (int sw = 0; sw < g_hardware.GetSwitchCount(); ++sw) {
+            bool switchPressed  = g_hardware.switches[sw].RisingEdge();
+            bool switchReleased = g_hardware.switches[sw].FallingEdge();
+            bool switchHeld  = g_hardware.switches[sw].TimeHeldMs() >= 1000.f;
 
             // Dispatch all routes for this switch //TODO: add safety in case r.effect is nullptr but keep it possible for PostPreFX select.
-            for (const auto &r : switchRoutes[sw]) {
+            for (const auto &r : g_routing.switches[sw]) {
                 switch (r.action) {
                     // SHORT PRESS -> fire on RisingEdge
                     case SwitchAction::AltPressed:
@@ -716,7 +737,7 @@ int main(void) {
                             r.effect->AlternateFootswitchReleased();
 
                             // Reset held flag so future holds can fire
-                            switchesHeldFired[sw] = false;
+                            g_switches.heldFired[sw] = false;
                         }
                         break;
 
@@ -725,7 +746,7 @@ int main(void) {
                             r.effect->BypassFootswitchReleased();
 
                             // Reset held flag so future holds can fire
-                            switchesHeldFired[sw] = false;
+                            g_switches.heldFired[sw] = false;
                         }
                         break;
 
@@ -734,31 +755,31 @@ int main(void) {
                             r.effect->FootswitchReleased(2);
 
                             // Reset held flag so future holds can fire
-                            switchesHeldFired[sw] = false;
+                            g_switches.heldFired[sw] = false;
                         }
                         break;
 
                     // HELD (1s) -> fire once when hold threshold reached, guarded by switchesHeldFired
                     case SwitchAction::AltHeld1s:
-                        if (switchHeld && !switchesHeldFired[sw]) {
+                        if (switchHeld && !g_switches.heldFired[sw]) {
                             r.effect->AlternateFootswitchHeldFor1Second();
-                            switchesHeldFired[sw] = true; // prevent repeated calls until release
+                            g_switches.heldFired[sw] = true; // prevent repeated calls until release
                         }
                         break;
 
                     case SwitchAction::BypassHeld1s:
-                        if (switchHeld && !switchesHeldFired[sw]) {
+                        if (switchHeld && !g_switches.heldFired[sw]) {
                             r.effect->BypassFootswitchHeldFor1Second();
-                            switchesHeldFired[sw] = true; // prevent repeated calls until release
+                            g_switches.heldFired[sw] = true; // prevent repeated calls until release
                         }
                         break;
 
                     case SwitchAction::PrePostModeSelect:
                         if (switchPressed) {
-                            preFXmode = true;
+                            g_effects.preFXmode = true;
                         }
                         if (switchReleased) {
-                            preFXmode = false;
+                            g_effects.preFXmode = false;
                         }
                         break;
                 }
@@ -766,43 +787,43 @@ int main(void) {
 
             // Ensure the held-flag is cleared if user releases the button without any 'Released' route mapped
             // (keeps held-guard consistent even if no route calls reset it)
-            if (switchReleased) {switchesHeldFired[sw] = false;}
+            if (switchReleased) {g_switches.heldFired[sw] = false;}
 
-            if (switchEnabledCache[sw] == true) {
-                switchEnabledTimeTilIdle[sw] -= elapsedTimeInSeconds;
+            if (g_switches.enabledCache[sw] == true) {
+                g_switches.timeTilIdle[sw] -= elapsedTimeInSeconds;
 
-                if (switchEnabledTimeTilIdle[sw] <= 0) {
-                    switchEnabledCache[sw] = false;
+                if (g_switches.timeTilIdle[sw] <= 0) {
+                    g_switches.enabledCache[sw] = false;
 
-                    if (switchDoubleEnabledCache[sw] != true) {
+                    if (g_switches.doubleEnabledCache[sw] != true) {
                         // We can safely know this was only a single tap here.
                     }
 
-                    switchDoubleEnabledCache[sw] = false;
+                    g_switches.doubleEnabledCache[sw] = false;
                 }
             }
 
             if (switchPressed) {
                 // Note that switch is pressed and reset the IdleTimer for detecting double presses
-                switchEnabledCache[sw] = switchPressed;
+                g_switches.enabledCache[sw] = switchPressed;
 
-                if (switchEnabledTimeTilIdle[sw] > 0) {
-                    switchDoubleEnabledCache[sw] = true;
+                if (g_switches.timeTilIdle[sw] > 0) {
+                    g_switches.doubleEnabledCache[sw] = true;
                 }
 
-                switchEnabledTimeTilIdle[sw] = switchEnabledIdleTimeInSeconds;
+                g_switches.timeTilIdle[sw] = g_switches.idleTimeInSeconds;
             }
         }
 
-        if (knobValuesInitialized) {
+        if (g_knobs.initialized) {
             // Only iterate the real knobs reported by hardware
             for (int k = 0; k < knobCount; ++k) {
-                if (!knobValueCacheChanged[k]) continue;
+                if (!g_knobs.cacheChanged[k]) continue;
 
-                float v = knobValueCache[k]; // normalized 0..1 after deadzone mapping
+                float v = g_knobs.cache[k]; // normalized 0..1 after deadzone mapping
 
                 // Send to all mapped targets of knob k
-                for (const KnobRoute &r : knobRoutes[k]) {
+                for (const KnobRoute &r : g_routing.knobs[k]) {
                     if (!r.effect) continue;               // safety: null-check
                     if (r.paramId < 0) continue;          // safety: invalid param id
 
