@@ -212,7 +212,10 @@ void LooperModule::ProcessStereo(float inL, float inR) {
     float layer_knob_val = GetParameterAsFloat(0);
     if (std::abs(layer_knob_val - prev_layer_knob_val_) > 0.05f) {
         prev_layer_knob_val_ = layer_knob_val;
-        selected_layer_ = static_cast<size_t>(layer_knob_val * n_recorded_layers_);
+        // Clamp selection to existing layers and absolute max
+        size_t max_layer = (n_recorded_layers_ == 0) ? 0 : n_recorded_layers_ - 1;
+        size_t knob_layer = static_cast<size_t>(std::min(layer_knob_val, 0.99f) * n_recorded_layers_);
+        selected_layer_ = std::min(knob_layer, std::min(max_layer, kNumLayers - 1));
     }
     
     for(size_t l = 0; l <= (is_recording_ ? recording_layer_ : selected_layer_); ++l) {
