@@ -10,3 +10,6 @@ url = https://github.com/cycfi/infra.git
 [submodule "Software/GuitarPedal/dependencies/q"]
 path = Software/GuitarPedal/dependencies/q/q
 url = https://github.com/cycfi/q.git
+[submodule "Software/GuitarPedal/dependencies/gcem"]
+	path = Software/GuitarPedal/dependencies/gcem
+	url = https://github.com/kthohr/gcem.git
