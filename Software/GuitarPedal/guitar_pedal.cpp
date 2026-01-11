@@ -7,7 +7,7 @@
 #include "Effect-Modules/looper_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/filter_module.h"
-#include "Effect-Modules/pitch_shifter_module.h"
+#include "Effect-Modules/polyoctave_module.h"
 #include "Effect-Modules/effect_router_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
@@ -452,7 +452,7 @@ int main(void) {
     auto* pre_eq        = new FilterModule();
     auto* post_eq       = new FilterModule();
     auto* pitch_router  = new EffectRouterModule();
-    auto* pitch_shifter = new PitchShifterModule();
+    auto* polyoctave    = new PolyOctaveModule();
 
     // Fix some effect parameters
     delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
@@ -473,15 +473,14 @@ int main(void) {
     post_eq->SetParameterAsBool(FilterModule::HP_MODE, false);
     post_eq->SetParameterAsFloat(FilterModule::CUTOFF, 0.96f);
 
-    pitch_shifter->SetParameterAsBinnedValue(PitchShifterModule::MODE, 1); //Latching
-    pitch_shifter->SetParameterAsFloat(PitchShifterModule::CROSSFADE, 1.0f);
+    polyoctave->SetParameterAsFloat(PolyOctaveModule::DOWN_2_OCT, 0.0f);
 
     looper->SetEnabled(true);
     delay->SetEnabled(false);
     pre_eq->SetEnabled(false);
     distortion->SetEnabled(false);
     post_eq->SetEnabled(false);
-    pitch_shifter->SetEnabled(false);
+    polyoctave->SetEnabled(false);
     pitch_router->SetEnabled(true);   // router must always run
 
     g_effects.looper = looper;
@@ -499,9 +498,9 @@ int main(void) {
     }
 
     // Also init the wrapped pitch shifter
-    pitch_shifter->Init(sample_rate);
+    polyoctave->Init(sample_rate);
     // Connect router to the inner pitch-shifter
-    pitch_router->SetInner(pitch_shifter);
+    pitch_router->SetInner(polyoctave);
 
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
@@ -516,8 +515,9 @@ int main(void) {
     g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
     g_routing.knobs[2].push_back({looper, LooperModule::SPEED});
-    g_routing.knobs[2].push_back({pitch_shifter, PitchShifterModule::DIRECTION});
-    g_routing.knobs[2].push_back({pitch_shifter, PitchShifterModule::SEMITONE, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 2 * (0.5f - x); }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
 
     g_routing.knobs[3].push_back({looper, LooperModule::SLICE});
 
@@ -560,7 +560,7 @@ int main(void) {
     g_routing.switches[altSwitchID].push_back({pre_eq, SwitchAction::BypassPressed});
     g_routing.switches[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
     g_routing.switches[altSwitchID].push_back({post_eq, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({pitch_shifter, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({polyoctave, SwitchAction::BypassPressed});
 
     // Main/bypass footswitch
     g_routing.switches[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});

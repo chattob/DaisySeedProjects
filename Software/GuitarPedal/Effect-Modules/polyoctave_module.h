@@ -22,6 +22,14 @@ class PolyOctaveModule : public BaseEffectModule {
     PolyOctaveModule();
     ~PolyOctaveModule();
 
+    enum Param {
+            DRY = 0,
+            DOWN_1_OCT,
+            DOWN_2_OCT,
+            UP_1_OCT,
+            PARAM_COUNT
+    };
+
     void Init(float sample_rate) override;
     void ProcessMono(float in) override;
     void ProcessStereo(float inL, float inR) override;
