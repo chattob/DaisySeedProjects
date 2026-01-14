@@ -6,7 +6,17 @@
 namespace bkshepherd
 {
 
+// ============================================================
+// FFT CONFIGURATION
+// ============================================================
+static constexpr size_t N = 16384;          // FFT size
+static constexpr size_t H_IN = N / 2;      // Input hop (analysis)
+static constexpr size_t STRETCH = 20;       // Stretch factor
+static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
+static constexpr size_t OUT_RING = 4 * N;
+
 static constexpr size_t kMicroLoopMaxSize = 48000 * 5;  // 5 seconds at 48kHz
+static constexpr size_t kMicroLoopMaxStretchedSize = STRETCH * kMicroLoopMaxSize;
 
 class MicroLooperModule : public BaseEffectModule
 {
@@ -29,6 +39,7 @@ class MicroLooperModule : public BaseEffectModule
 
     // Loop buffer - stored in SDRAM
     static float DSY_SDRAM_BSS buffer_[kMicroLoopMaxSize];
+    static float DSY_SDRAM_BSS stretched_buffer_[kMicroLoopMaxStretchedSize];
 
     // Recording state
     bool midi_sync_ = false;
@@ -47,6 +58,16 @@ class MicroLooperModule : public BaseEffectModule
     PlayingHead recording_head_;
 
     void WriteBuffer(float in);
+    void StartStretching();
+
+    // Stretching state
+    bool is_stretching_ = false;
+    bool use_stretched_buffer_ = false;
+    size_t stretch_read_pos_ = 0;      // Position in source buffer_
+    size_t stretch_write_pos_ = 0;     // Position in stretched_buffer_
+    size_t stretched_length_ = 0;      // Final length of stretched buffer
+    size_t stretch_total_frames_ = 0;
+    size_t stretch_frames_done_ = 0;
 };
 
 } // namespace bkshepherd

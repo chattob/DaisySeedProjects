@@ -6,28 +6,22 @@
 using namespace bkshepherd;
 
 float DSY_SDRAM_BSS MicroLooperModule::buffer_[kMicroLoopMaxSize];
+float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_[kMicroLoopMaxStretchedSize];
 
-// ============================================================
-// FFT CONFIGURATION
-// ============================================================
-static constexpr size_t N = 16384;          // FFT size
-static constexpr size_t H_IN = N / 2;      // Input hop (analysis)
-static constexpr size_t STRETCH = 20;       // Stretch factor
-static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
-static constexpr size_t OUT_RING = 4 * N;
-
-// State machine for incremental processing
-enum class ProcessState {
+// State machine for offline stretching
+enum class StretchState {
     IDLE,
-    GATHER_INPUT,
+    GATHER_FRAME,
     APPLY_ANALYSIS_WINDOW,
     DO_FFT,
     EXTRACT_MAGNITUDES,
     RANDOMIZE_PHASES,
     DO_IFFT,
     APPLY_SYNTHESIS_WINDOW,
-    ADD_TO_OLA,
-    CHECK_MORE_SYNTH
+    ADD_TO_OUTPUT,
+    CHECK_MORE_SYNTH,
+    ADVANCE_READ,
+    DONE
 };
 
 // RNG for phase randomization
@@ -58,25 +52,15 @@ static float DSY_SDRAM_BSS s_frame_time[N];
 static float DSY_SDRAM_BSS s_frame_freq[N];
 static float DSY_SDRAM_BSS s_magnitudes[N/2];
 
-// Input ring buffer
-static float DSY_SDRAM_BSS s_in_ring[N];
-static size_t s_in_w = 0;
-static size_t s_samples_seen = 0;
-static size_t s_hop_in_counter = 0;
-
-// Output OLA ring
-static float DSY_SDRAM_BSS s_out_ring[OUT_RING];
-static float DSY_SDRAM_BSS s_norm_ring[OUT_RING];
-static size_t s_out_r = 0;
-static size_t s_ola_w = 0;
-static bool s_ola_inited = false;
+// Normalization buffer for offline OLA
+static float DSY_SDRAM_BSS s_stretch_norm[kMicroLoopMaxStretchedSize];
 
 // Window - in SDRAM
 static float DSY_SDRAM_BSS s_win[N];
 static float DSY_SDRAM_BSS s_win2[N];
 
 // Processing state
-static volatile ProcessState s_process_state = ProcessState::IDLE;
+static volatile StretchState s_stretch_state = StretchState::IDLE;
 static size_t s_synth_count = 0;
 
 // Snapshot for processing
@@ -93,10 +77,14 @@ static void BuildHann(float* w, size_t n) {
         w[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * (float)i / (float)(n - 1)));
 }
 
-static inline void GatherFrameFromRing(float* dst, const float* ring, size_t ring_w) {
-    size_t start = ring_w;
+static inline void GatherFrameFromBuffer(float* dst, const float* buffer, size_t buffer_len,
+                                         size_t start) {
+    if(buffer_len == 0) {
+        std::fill(dst, dst + N, 0.0f);
+        return;
+    }
     for(size_t i = 0; i < N; ++i)
-        dst[i] = ring[(start + i) % N];
+        dst[i] = buffer[(start + i) % buffer_len];
 }
 
 static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
@@ -158,19 +146,10 @@ void MicroLooperModule::Init(float sample_rate)
         s_win2[i] = s_win[i] * s_win[i];
 
     // Clear buffers
-    std::memset(s_in_ring, 0, sizeof(s_in_ring));
-    std::memset(s_out_ring, 0, sizeof(s_out_ring));
-    std::memset(s_norm_ring, 0, sizeof(s_norm_ring));
     std::memset(s_magnitudes, 0, sizeof(s_magnitudes));
 
     // Reset state
-    s_in_w = 0;
-    s_samples_seen = 0;
-    s_hop_in_counter = 0;
-    s_out_r = 0;
-    s_ola_w = 0;
-    s_ola_inited = false;
-    s_process_state = ProcessState::IDLE;
+    s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
 }
 
@@ -190,11 +169,20 @@ void MicroLooperModule::ResetBuffer() {
     first_layer_        = true;
     loop_length_        = 0;
     mod_                = kMicroLoopMaxSize;
+    is_stretching_      = false;
+    use_stretched_buffer_ = false;
+    stretched_length_   = 0;
+    stretch_read_pos_   = 0;
+    stretch_write_pos_  = 0;
+    stretch_total_frames_ = 0;
+    stretch_frames_done_ = 0;
 
     playing_head_.Reset();
     recording_head_.Reset();
 
     std::fill(&buffer_[0], &buffer_[0] + kMicroLoopMaxSize, 0.0f);
+    s_stretch_state = StretchState::IDLE;
+    s_synth_count = 0;
 }
 
 void MicroLooperModule::WriteBuffer(float in)
@@ -207,60 +195,61 @@ void MicroLooperModule::WriteBuffer(float in)
     loop_length_++;
 };
 
+void MicroLooperModule::StartStretching()
+{
+    if(mod_ == 0) {
+        is_stretching_ = false;
+        use_stretched_buffer_ = false;
+        stretched_length_ = 0;
+        return;
+    }
+
+    stretch_read_pos_ = 0;
+    stretch_write_pos_ = 0;
+    stretch_frames_done_ = 0;
+    stretch_total_frames_ = (mod_ + H_IN - 1) / H_IN;
+    size_t total_synth_frames = stretch_total_frames_ * STRETCH;
+    stretched_length_ = total_synth_frames * H_OUT;
+    if(stretched_length_ == 0) {
+        is_stretching_ = false;
+        use_stretched_buffer_ = false;
+        return;
+    }
+    if(stretched_length_ > kMicroLoopMaxStretchedSize) {
+        stretched_length_ = kMicroLoopMaxStretchedSize;
+    }
+
+    std::fill(&stretched_buffer_[0], &stretched_buffer_[0] + stretched_length_, 0.0f);
+    std::fill(&s_stretch_norm[0], &s_stretch_norm[0] + stretched_length_, 0.0f);
+
+    is_stretching_ = true;
+    use_stretched_buffer_ = false;
+    s_synth_count = 0;
+    s_stretch_state = StretchState::GATHER_FRAME;
+}
+
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
-    // Paulstretch
-        // ---- Input ----
-        s_in_ring[s_in_w] = inL;
-        s_in_w = (s_in_w + 1) % N;
-        s_samples_seen++;
+    m_audioLeft = inL;
 
-        // ---- Output ----
-        float acc = s_out_ring[s_out_r];
-        float norm = s_norm_ring[s_out_r];
-        s_out_ring[s_out_r] = 0.0f;
-        s_norm_ring[s_out_r] = 0.0f;
-        s_out_r = (s_out_r + 1) % OUT_RING;
-
-        constexpr float eps = 1e-12f;
-        float y = (fabsf(norm) > eps) ? (acc / norm) : 0.0f;
-        m_audioLeft = y;
-        m_audioRight = y;
-
-        // ---- Trigger new analysis when input hop reached ----
-        s_hop_in_counter++;
-        if(s_hop_in_counter >= H_IN && s_samples_seen >= N) {
-            if(s_process_state == ProcessState::IDLE) {
-                s_hop_in_counter = 0;
-
-                // Take snapshot
-                GatherFrameFromRing(s_snapshot_buffer, s_in_ring, s_in_w);
-
-                // Initialize OLA position
-                if(!s_ola_inited) {
-                    s_ola_w = (s_out_r + N) % OUT_RING;
-                    s_ola_inited = true;
-                }
-
-                s_synth_count = 0;
-                s_process_state = ProcessState::GATHER_INPUT;
-            }
-        }
-    
-        // Looper
-    if (is_playing_) {
-        float speed = 1.0;
+    if (is_playing_ && mod_ > 0) {
+        float speed = 1.0f;
         playing_head_.SetSpeed(speed);
         playing_head_.UpdatePosition(mod_);
-        recording_head_.UpdatePosition(mod_);
+        if (is_recording_) {
+            recording_head_.UpdatePosition(mod_);
+        }
 
         float playing_head_position_f = playing_head_.GetHeadPosition();
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
-        m_audioLeft += buffer_[playing_head_position];
+        if (use_stretched_buffer_) {
+            m_audioLeft += stretched_buffer_[playing_head_position];
+        } else {
+            m_audioLeft += buffer_[playing_head_position];
+        }
     }
-    
-    m_audioLeft += inL;
+
     m_audioRight = m_audioLeft;
 
     if (is_recording_) {
@@ -312,95 +301,134 @@ bool MicroLooperModule::Poll() {
         armed_stop_ = false;
         is_recording_ = false;
         is_playing_ = true;
+        StartStretching();
     }
 
-    // Paulstretch
-    switch(s_process_state) {
+    if (is_stretching_) {
+        switch(s_stretch_state) {
+            case StretchState::IDLE:
+                break;
 
-        case ProcessState::IDLE:
-            break;
+            case StretchState::GATHER_FRAME:
+                GatherFrameFromBuffer(s_snapshot_buffer, buffer_, mod_, stretch_read_pos_);
+                s_stretch_state = StretchState::APPLY_ANALYSIS_WINDOW;
+                break;
 
-        case ProcessState::GATHER_INPUT:
-            s_process_state = ProcessState::APPLY_ANALYSIS_WINDOW;
-            break;
-
-        case ProcessState::APPLY_ANALYSIS_WINDOW:
-            for(size_t k = 0; k < N; ++k) {
-                s_frame_time[k] = s_snapshot_buffer[k] * s_win[k];
-            }
-            s_process_state = ProcessState::DO_FFT;
-            break;
-
-        case ProcessState::DO_FFT:
-            s_fft.Direct(s_frame_time, s_frame_freq);
-            s_process_state = ProcessState::EXTRACT_MAGNITUDES;
-            break;
-
-        case ProcessState::EXTRACT_MAGNITUDES:
-            s_magnitudes[0] = fabsf(s_frame_freq[0]);
-            s_magnitudes[N/2 - 1] = fabsf(s_frame_freq[1]);
-            for(size_t k = 1; k < N/2 - 1; ++k) {
-                float re = s_frame_freq[2*k];
-                float im = s_frame_freq[2*k + 1];
-                s_magnitudes[k] = sqrtf(re*re + im*im);
-            }
-            s_process_state = ProcessState::RANDOMIZE_PHASES;
-            break;
-
-        case ProcessState::RANDOMIZE_PHASES:
-            s_frame_freq[0] = s_magnitudes[0];
-            s_frame_freq[1] = s_magnitudes[N/2 - 1];
-
-            for(size_t k = 1; k < N/2; ++k) {
-                float mag = s_magnitudes[k];
-
-                float u, v, r2;
-                do {
-                    u = s_rng.randSigned();
-                    v = s_rng.randSigned();
-                    r2 = u*u + v*v;
-                } while(r2 > 1.0f || r2 < 1e-12f);
-
-                float inv = mag / sqrtf(r2);
-                s_frame_freq[2*k] = u * inv;
-                s_frame_freq[2*k + 1] = v * inv;
-            }
-            s_process_state = ProcessState::DO_IFFT;
-            break;
-
-        case ProcessState::DO_IFFT:
-            s_fft.Inverse(s_frame_freq, s_frame_time);
-            {
-                const float scale = 1.0f / (float)N;
+            case StretchState::APPLY_ANALYSIS_WINDOW:
                 for(size_t k = 0; k < N; ++k) {
-                    s_frame_time[k] *= scale;
+                    s_frame_time[k] = s_snapshot_buffer[k] * s_win[k];
                 }
-            }
-            s_process_state = ProcessState::APPLY_SYNTHESIS_WINDOW;
-            break;
+                s_stretch_state = StretchState::DO_FFT;
+                break;
 
-        case ProcessState::APPLY_SYNTHESIS_WINDOW:
-            for(size_t k = 0; k < N; ++k) {
-                s_result_buffer[k] = s_frame_time[k] * s_win[k];
-            }
-            s_process_state = ProcessState::ADD_TO_OLA;
-            break;
+            case StretchState::DO_FFT:
+                s_fft.Direct(s_frame_time, s_frame_freq);
+                s_stretch_state = StretchState::EXTRACT_MAGNITUDES;
+                break;
 
-        case ProcessState::ADD_TO_OLA:
-            OLA_AddFrame(s_out_ring, s_norm_ring, OUT_RING, s_ola_w, s_result_buffer, s_win2);
-            s_ola_w = (s_ola_w + H_OUT) % OUT_RING;
+            case StretchState::EXTRACT_MAGNITUDES:
+                s_magnitudes[0] = fabsf(s_frame_freq[0]);
+                s_magnitudes[N/2 - 1] = fabsf(s_frame_freq[1]);
+                for(size_t k = 1; k < N/2 - 1; ++k) {
+                    float re = s_frame_freq[2*k];
+                    float im = s_frame_freq[2*k + 1];
+                    s_magnitudes[k] = sqrtf(re*re + im*im);
+                }
+                s_stretch_state = StretchState::RANDOMIZE_PHASES;
+                break;
 
-            s_synth_count++;
-            s_process_state = ProcessState::CHECK_MORE_SYNTH;
-            break;
+            case StretchState::RANDOMIZE_PHASES:
+                s_frame_freq[0] = s_magnitudes[0];
+                s_frame_freq[1] = s_magnitudes[N/2 - 1];
 
-        case ProcessState::CHECK_MORE_SYNTH:
-            if(s_synth_count < STRETCH) {
-                s_process_state = ProcessState::RANDOMIZE_PHASES;
-            } else {
-                s_process_state = ProcessState::IDLE;
-            }
-            break;
+                for(size_t k = 1; k < N/2; ++k) {
+                    float mag = s_magnitudes[k];
+
+                    float u, v, r2;
+                    do {
+                        u = s_rng.randSigned();
+                        v = s_rng.randSigned();
+                        r2 = u*u + v*v;
+                    } while(r2 > 1.0f || r2 < 1e-12f);
+
+                    float inv = mag / sqrtf(r2);
+                    s_frame_freq[2*k] = u * inv;
+                    s_frame_freq[2*k + 1] = v * inv;
+                }
+                s_stretch_state = StretchState::DO_IFFT;
+                break;
+
+            case StretchState::DO_IFFT:
+                s_fft.Inverse(s_frame_freq, s_frame_time);
+                {
+                    const float scale = 1.0f / (float)N;
+                    for(size_t k = 0; k < N; ++k) {
+                        s_frame_time[k] *= scale;
+                    }
+                }
+                s_stretch_state = StretchState::APPLY_SYNTHESIS_WINDOW;
+                break;
+
+            case StretchState::APPLY_SYNTHESIS_WINDOW:
+                for(size_t k = 0; k < N; ++k) {
+                    s_result_buffer[k] = s_frame_time[k] * s_win[k];
+                }
+                s_stretch_state = StretchState::ADD_TO_OUTPUT;
+                break;
+
+            case StretchState::ADD_TO_OUTPUT:
+                if (stretched_length_ > 0) {
+                    OLA_AddFrame(stretched_buffer_, s_stretch_norm, stretched_length_, stretch_write_pos_,
+                                 s_result_buffer, s_win2);
+                    stretch_write_pos_ = (stretch_write_pos_ + H_OUT) % stretched_length_;
+                }
+
+                s_synth_count++;
+                s_stretch_state = StretchState::CHECK_MORE_SYNTH;
+                break;
+
+            case StretchState::CHECK_MORE_SYNTH:
+                if(s_synth_count < STRETCH) {
+                    s_stretch_state = StretchState::RANDOMIZE_PHASES;
+                } else {
+                    s_synth_count = 0;
+                    s_stretch_state = StretchState::ADVANCE_READ;
+                }
+                break;
+
+            case StretchState::ADVANCE_READ:
+                if (mod_ > 0) {
+                    stretch_read_pos_ = (stretch_read_pos_ + H_IN) % mod_;
+                } else {
+                    stretch_read_pos_ = 0;
+                }
+                stretch_frames_done_++;
+                if (stretch_frames_done_ >= stretch_total_frames_) {
+                    s_stretch_state = StretchState::DONE;
+                } else {
+                    s_stretch_state = StretchState::GATHER_FRAME;
+                }
+                break;
+
+            case StretchState::DONE:
+                if (stretched_length_ > 0) {
+                    constexpr float eps = 1e-12f;
+                    for (size_t i = 0; i < stretched_length_; ++i) {
+                        float norm = s_stretch_norm[i];
+                        stretched_buffer_[i] = (fabsf(norm) > eps) ? (stretched_buffer_[i] / norm) : 0.0f;
+                    }
+                }
+
+                is_stretching_ = false;
+                use_stretched_buffer_ = (stretched_length_ > 0);
+                if (use_stretched_buffer_) {
+                    mod_ = stretched_length_;
+                    playing_head_.Reset();
+                    recording_head_.Reset();
+                }
+                s_stretch_state = StretchState::IDLE;
+                break;
+        }
     }
     return true;
 }
