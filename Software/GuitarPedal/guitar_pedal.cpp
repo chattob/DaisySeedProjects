@@ -3,12 +3,7 @@
 #include <string.h>
 #include "Hardware-Modules/guitar_pedal_125b.h"
 #include "Effect-Modules/base_effect_module.h"
-#include "Effect-Modules/delay_module.h"
-#include "Effect-Modules/looper_module.h"
-#include "Effect-Modules/distortion_module.h"
-#include "Effect-Modules/filter_module.h"
-#include "Effect-Modules/polyoctave_module.h"
-#include "Effect-Modules/effect_router_module.h"
+#include "Effect-Modules/micro_looper_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -24,7 +19,7 @@ CpuLoadMeter g_cpuLoadMeter;
 // Effect Chain State
 struct {
     std::vector<BaseEffectModule*> chain;
-    LooperModule* looper = nullptr;
+    MicroLooperModule* micro_looper = nullptr;
     bool preFXmode = false;
 } g_effects;
 
@@ -142,121 +137,7 @@ struct {
 
 // Typical Switch case for Message Type.
 void HandleMidiMessage(MidiEvent m) {
-    if (!g_hardware.SupportsMidi()) {
-        return;
-    }
-
-    int channel = 0;
-
-    // Make sure the settings midi channel is within the proper range
-    // and convert the channel to be zero indexed instead of 1 like the setting.
-    if (g_midi.channel >= 1 && g_midi.channel <= 16) {
-        channel = g_midi.channel - 1;
-    }
-
-    // Pass the midi message through to midi out if so desired (only handles non system event types)
-    if (g_midi.through && m.type < SystemCommon) {
-        // Re-pack the Midi Message
-        uint8_t midiData[3];
-
-        midiData[0] = 0b10000000 | ((uint8_t)m.type << 4) | ((uint8_t)m.channel);
-        midiData[1] = m.data[0];
-        midiData[2] = m.data[1];
-
-        int bytesToSend = 3;
-
-        if (m.type == ChannelPressure || m.type == ProgramChange) {
-            bytesToSend = 2;
-        }
-
-        g_hardware.midi.SendMessage(midiData, sizeof(uint8_t) * bytesToSend);
-    }
-
-    if (m.type == SystemRealTime) {
-        switch (m.srt_type) {
-        case TimingClock:
-            if (g_midi.clock.running){
-                g_midi.clock.tickCount++;
-
-                if(g_midi.clock.tickCount % 24 == 0) {
-                    g_effects.looper->SetClockBeat();
-                }
-
-                // detect BEAT here, per tick
-                if(g_midi.clock.tickCount % 24 < 8){
-                    g_midi.beatLightOn = true;
-                } else {
-                    g_midi.beatLightOn = false;
-                }
-            }
-            break;
-
-        case Start:
-            g_midi.clock.tickCount = 0;
-            g_midi.clock.running = true;
-            break;
-
-        case Continue:
-            g_midi.clock.running = true;
-            break;
-
-        case Stop:
-            g_midi.clock.running = false;
-            break;
-
-        default:
-            // ignore others
-            break; 
-        }
-    }
-
-    // Only listen to messages for the devices set channel.
-    if (m.channel != channel) {
-        return;
-    }
-
-    switch (m.type) {
-        case NoteOn: {
-            /*if (activeEffect != NULL) {
-                NoteOnEvent p = m.AsNoteOn();
-                activeEffect->OnNoteOn(p.note, p.velocity);
-            }*/
-            break;
-        }
-        case NoteOff: {
-            /*if (activeEffect != NULL) {
-                NoteOnEvent p = m.AsNoteOn();
-                activeEffect->OnNoteOff(p.note, p.velocity);
-            }*/
-            break;
-        }
-        case ControlChange: {
-            /*if (activeEffect != nullptr) {
-                ControlChangeEvent p = m.AsControlChange();
-
-                // Notify the activeEffect to handle this midi cc / value
-                activeEffect->MidiCCValueNotification(p.control_number, p.value);
-
-                // Notify the UI to update if this CC message was mapped to an EffectParameter
-                int effectParamID = activeEffect->GetMappedParameterIDForMidiCC(p.control_number);
-
-                if (effectParamID != -1) {
-                    guitarPedalUI.UpdateActiveEffectParameterValue(effectParamID, true);
-                }
-            }*/
-            break;
-        }
-        case ProgramChange: {
-            /*ProgramChangeEvent p = m.AsProgramChange();
-
-            if (p.program >= 0 && p.program < availableEffectsCount) {
-                SetActiveEffect(p.program);
-            }*/
-            break;
-        }
-        default:
-            break;
-    }
+    return;
 }
 
 //======================================================================
@@ -282,6 +163,9 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     // Default LEDs are off
     float led1Brightness = 0.0f;
     float led2Brightness = 0.0f;
+
+    led1Brightness = g_effects.micro_looper->GetBrightnessForLED(0);
+    led2Brightness = g_effects.micro_looper->GetBrightnessForLED(1);
 
     // Store the previous value of the effect bypass so that we can determine if
     // we need to perform a toggle at the end of processing the switches
@@ -325,38 +209,14 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTarget[1][i] = in[1][i];
     }
 
-    if (g_effects.preFXmode) {
-        if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
-            for (auto* fx : g_effects.chain) {
-                if (!fx) continue;
-                if (!fx->IsEnabled()) continue;
-                if (g_hardware.SupportsStereo()) {
-                    fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-                } else {
-                    fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
-                }
-            }
-        }
-        if (g_hardware.SupportsStereo()) {
-            g_effects.looper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-        } else {
-            g_effects.looper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
-        }
-    } else {
-        if (g_hardware.SupportsStereo()) {
-            g_effects.looper->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-        } else {
-            g_effects.looper->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
-        }
-        if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
-            for (auto* fx : g_effects.chain) {
-                if (!fx) continue;
-                if (!fx->IsEnabled()) continue;
-                if (g_hardware.SupportsStereo()) {
-                    fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-                } else {
-                    fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
-                }
+    if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
+        for (auto* fx : g_effects.chain) {
+            if (!fx) continue;
+            if (!fx->IsEnabled()) continue;
+            if (g_hardware.SupportsStereo()) {
+                fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
+            } else {
+                fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
             }
         }
     }
@@ -412,14 +272,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         out[1][i] = g_crossfade.right.Process(crossFadeSourceRight, crossFadeTargetRight);  
     }
 
-    // Update state of the LEDs
-    if (g_effects.looper->GetNumRecordedLayers() > 0 || g_effects.looper->IsRecording()) {
-        led1Brightness = g_effects.looper->GetBrightnessForLED(0);
-    } else {
-        led1Brightness = g_midi.beatLightOn ? 1.0f : 0.0f;
-    }
-    led2Brightness = g_effects.looper->GetBrightnessForLED(1);
-
     // Handle LEDs
     g_hardware.SetLed(0, led1Brightness);
     g_hardware.SetLed(1, led2Brightness);
@@ -446,61 +298,15 @@ int main(void) {
     g_bypass.bypassToggleTransitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_bypass.bypassToggleTransitionTimeInSeconds);
     g_crossfade.transitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_crossfade.transitionTimeInSeconds);
 
-    auto* looper        = new LooperModule();
-    auto* delay         = new DelayModule();
-    auto* distortion    = new DistortionModule();
-    auto* pre_eq        = new FilterModule();
-    auto* post_eq       = new FilterModule();
-    auto* pitch_router  = new EffectRouterModule();
-    auto* polyoctave    = new PolyOctaveModule();
+    g_effects.micro_looper = new MicroLooperModule();
 
-    // Fix some effect parameters
-    delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
-    delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
-    delay->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
-    delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, 2);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, 6);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_FREQ, 0.65f);
+    g_effects.micro_looper->SetEnabled(true);
 
-    distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
-    distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
-    distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 0);
-    distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
-
-    pre_eq->SetParameterAsBool(FilterModule::HP_MODE, true);
-    pre_eq->SetParameterAsFloat(FilterModule::CUTOFF, 0.0f);
-    post_eq->SetParameterAsBool(FilterModule::HP_MODE, false);
-    post_eq->SetParameterAsFloat(FilterModule::CUTOFF, 0.96f);
-
-    polyoctave->SetParameterAsFloat(PolyOctaveModule::DOWN_2_OCT, 0.0f);
-
-    looper->SetEnabled(true);
-    delay->SetEnabled(false);
-    pre_eq->SetEnabled(false);
-    distortion->SetEnabled(false);
-    post_eq->SetEnabled(false);
-    polyoctave->SetEnabled(false);
-    pitch_router->SetEnabled(true);   // router must always run
-
-    g_effects.looper = looper;
-
-    g_effects.chain.push_back(pitch_router);
-    g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(pre_eq);
-    g_effects.chain.push_back(distortion);
-    g_effects.chain.push_back(post_eq);
-    
-    g_effects.looper->Init(sample_rate);
+    g_effects.chain.push_back(g_effects.micro_looper);
 
     for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
     }
-
-    // Also init the wrapped pitch shifter
-    polyoctave->Init(sample_rate);
-    // Connect router to the inner pitch-shifter
-    pitch_router->SetInner(polyoctave);
 
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
@@ -510,7 +316,7 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[0].push_back({looper, LooperModule::LAYER});
+    /*g_routing.knobs[0].push_back({looper, LooperModule::LAYER});
 
     g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
@@ -524,55 +330,14 @@ int main(void) {
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});
-    
-
-    /*g_routing.knobs[0].push_back({delay, DelayModule::DELAY_MIX});
-    g_routing.knobs[1].push_back({delay, DelayModule::DELAY_TIME});
-    g_routing.knobs[2].push_back({delay, DelayModule::D_FEEDBACK});
-    g_routing.knobs[3].push_back({delay, DelayModule::MOD_AMPLITUDE});
-    g_routing.knobs[4].push_back({delay, DelayModule::MOD_FREQ});*/
-
-    /*g_routing.knobs[0].push_back({distortion, DistortionModule::GAIN});
-    g_routing.knobs[1].push_back({distortion, DistortionModule::MIX, [](float x) { return powf(x, 0.7f); }});
-    g_routing.knobs[2].push_back({distortion, DistortionModule::INTENSITY});
-    g_routing.knobs[3].push_back({post_eq, FilterModule::CUTOFF});*/
-
-    /*g_routing.knobs[1].push_back({pitch_shifter, PitchShifterModule::CROSSFADE});
-    g_routing.knobs[3].push_back({pitch_shifter, PitchShifterModule::MODE});
-    g_routing.knobs[4].push_back({pitch_shifter, PitchShifterModule::SHIFT});
-    g_routing.knobs[5].push_back({pitch_shifter, PitchShifterModule::RETURN});*/
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});*/
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
-    int triswitch_0_left    = 2;
-    int triswitch_0_right   = 3;
-    int triswitch_1_left    = 4;
-    int triswitch_1_right   = 5;
-    int triswitch_2_left    = 6;
-    int triswitch_2_right   = 7;
 
     // Alternate footswitch: toggle delay pressed & looper held
-    g_routing.switches[altSwitchID].push_back({looper, SwitchAction::AltPressed});
-    g_routing.switches[altSwitchID].push_back({looper, SwitchAction::AltHeld1s});
-
-    g_routing.switches[altSwitchID].push_back({delay, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({pre_eq, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({distortion, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({post_eq, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({polyoctave, SwitchAction::BypassPressed});
-
-    // Main/bypass footswitch
-    g_routing.switches[bypassSwitchID].push_back({looper, SwitchAction::BypassPressed});
-
-    // Triswitch 1 left: ON/OFF for pitch-shifter routing
-    g_routing.switches[triswitch_1_left].push_back({looper, SwitchAction::Id2Pressed});
-    g_routing.switches[triswitch_1_left].push_back({looper, SwitchAction::Id2Released});
-    g_routing.switches[triswitch_1_left].push_back({pitch_router, SwitchAction::AltPressed});
-    g_routing.switches[triswitch_1_left].push_back({pitch_router, SwitchAction::AltReleased});
-
-    // Triswitch 2: left = pre-fx, right/mid = post-fx
-    g_routing.switches[triswitch_2_left].push_back({nullptr, SwitchAction::PrePostModeSelect});
+    g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, SwitchAction::BypassPressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, SwitchAction::AltPressed});
 
     // Setup Relay Bypass State
     if (g_hardware.SupportsTrueBypass()) {
@@ -635,15 +400,12 @@ int main(void) {
             g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
         }
 
-        g_effects.looper->SetParameterAsBool(LooperModule::MIDI_SYNC, g_midi.clock.running); 
-
         // Run polling action.
         bool res = false;
         for (auto* effect : g_effects.chain) {
             if (!effect) continue;
             res |= effect->Poll();
         }
-        g_effects.looper->Poll();
 
         // Handle Knob Changes
         if (!g_knobs.initialized && g_timing.secondsSinceStartup > 1.0f) {

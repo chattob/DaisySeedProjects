@@ -197,8 +197,8 @@ void LooperModule::ProcessStereo(float inL, float inR) {
 
     if (is_playing_) {
         playing_head_.SetSpeed(speed);
-        playing_head_.UpdatePosition(first_layer_, mod, slice, offset_);
-        recording_head_.UpdatePosition(first_layer_, mod);
+        playing_head_.UpdatePosition(mod, slice, offset_);
+        recording_head_.UpdatePosition(mod);
     }
 
     float playing_head_position_f = playing_head_.GetHeadPosition();

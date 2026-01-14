@@ -16,34 +16,28 @@ static inline float wrapf(float x, float L)
     return r;
 }
 
-void PlayingHead::UpdatePosition(bool first_layer, size_t loop_length, float slice, float start_pos) {
+void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_pos) {
     // When recording the first layer, if recording with negative speed, 
     // we still write the buffer in forward direction.
     // The buffer will be reversed when the "stop recording" button is pressed.
-    // This is done because we do not know how long the recording will be.
-    float speed;
-    if (first_layer && speed_ < 0.0f) {
-        speed = -speed_;
-    } else {
-        speed = speed_;
-    } 
+    // This is done becausse we do not know how long the recording will be.
     
     // Compute slice length
     float slice_length = static_cast<float>(loop_length) * slice;
 
     // Compute slice end
     float end_pos;
-    if (speed > 0.0f) {
+    if (speed_ > 0.0f) {
         end_pos = wrapf(start_pos + slice_length, static_cast<float>(loop_length));
     } else {
         end_pos = wrapf(start_pos - slice_length, static_cast<float>(loop_length));
     }
 
     // Advance playback head
-    head_position_f_ += speed;
+    head_position_f_ += speed_;
 
     // Forward playback
-    if (speed > 0.0f) {
+    if (speed_ > 0.0f) {
         if (start_pos < end_pos) {
             // contiguous slice
             if (head_position_f_ >= end_pos) {
@@ -63,7 +57,7 @@ void PlayingHead::UpdatePosition(bool first_layer, size_t loop_length, float sli
     }
 
     // Backward playback
-    else if (speed < 0.0f) {
+    else if (speed_ < 0.0f) {
         if (start_pos < end_pos) {
             // contiguous slice
             if (head_position_f_ < start_pos) {
