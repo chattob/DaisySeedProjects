@@ -102,18 +102,18 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
 static const int s_paramCount = 2;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
-        name : "Cutoff",
+        name : "Speed",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.5f},
+        defaultValue : {.float_value = 0.75f},
         knobMapping : 0,
         midiCCMapping : -1
     },
     {
-        name : "HP Mode",
-        valueType : ParameterValueType::Bool,
+        name : "Loop mix",
+        valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.uint_value = 0},
+        defaultValue : {.float_value = 0.0f},
         knobMapping : 1,
         midiCCMapping : -1
     },
@@ -177,6 +177,7 @@ void MicroLooperModule::ResetBuffer() {
     stretch_total_frames_ = 0;
     stretch_frames_done_ = 0;
 
+    stretch_playing_head_.Reset();
     playing_head_.Reset();
     recording_head_.Reset();
 
@@ -233,9 +234,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     m_audioLeft = inL;
 
     if (is_playing_ && mod_ > 0) {
-        float speed = 1.0f;
-        playing_head_.SetSpeed(speed);
+        float target_speed = 4.0f * (GetParameterAsFloat(SPEED) - 0.5f);
+        const float smooth_coeff = 0.0008f;
+        smoothed_speed_ += smooth_coeff * (target_speed - smoothed_speed_);
+
+        playing_head_.SetSpeed(smoothed_speed_);
         playing_head_.UpdatePosition(mod_);
+
         if (is_recording_) {
             recording_head_.UpdatePosition(mod_);
         }
@@ -244,7 +249,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
         if (use_stretched_buffer_) {
-            m_audioLeft += stretched_buffer_[playing_head_position];
+            stretch_playing_head_.SetSpeed(smoothed_speed_);
+            stretch_playing_head_.UpdatePosition(stretched_ready_length_);
+            float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
+            size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
+
+            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+            m_audioLeft += stretched_buffer_[stretch_playing_head_position];
         } else {
             m_audioLeft += buffer_[playing_head_position];
         }
@@ -403,8 +414,15 @@ bool MicroLooperModule::Poll() {
                     stretch_read_pos_ = 0;
                 }
                 stretch_frames_done_++;
+
+                use_stretched_buffer_ = (stretch_frames_done_ > 0);
+                if (use_stretched_buffer_) {
+                    stretched_ready_length_ = stretch_write_pos_;
+                }
+
                 if (stretch_frames_done_ >= stretch_total_frames_) {
                     s_stretch_state = StretchState::DONE;
+                    stretched_ready_length_ = stretched_length_;
                 } else {
                     s_stretch_state = StretchState::GATHER_FRAME;
                 }
@@ -420,12 +438,6 @@ bool MicroLooperModule::Poll() {
                 }
 
                 is_stretching_ = false;
-                use_stretched_buffer_ = (stretched_length_ > 0);
-                if (use_stretched_buffer_) {
-                    mod_ = stretched_length_;
-                    playing_head_.Reset();
-                    recording_head_.Reset();
-                }
                 s_stretch_state = StretchState::IDLE;
                 break;
         }

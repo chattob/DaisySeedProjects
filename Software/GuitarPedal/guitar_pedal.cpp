@@ -316,9 +316,10 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    /*g_routing.knobs[0].push_back({looper, LooperModule::LAYER});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SPEED});
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
 
-    g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
+    /*g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
     g_routing.knobs[2].push_back({looper, LooperModule::SPEED});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
