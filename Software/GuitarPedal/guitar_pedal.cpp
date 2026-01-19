@@ -300,6 +300,9 @@ int main(void) {
 
     g_effects.micro_looper = new MicroLooperModule();
 
+    // Fix some effect parameters
+    g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
+
     g_effects.micro_looper->SetEnabled(true);
 
     g_effects.chain.push_back(g_effects.micro_looper);

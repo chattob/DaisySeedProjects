@@ -20,6 +20,7 @@ BUILD_DIR = build
 C_INCLUDES += -isystem ./dependencies/q/q/q_lib/include
 C_INCLUDES += -isystem ./dependencies/q/infra/include
 C_INCLUDES += -isystem ./dependencies/stmlib
+C_INCLUDES += -isystem ./dependencies/gcem/include
 
 # Sources (GNU Make >= 4 supports ** in wildcard)
 CPP_SOURCES = $(wildcard *.cpp) \

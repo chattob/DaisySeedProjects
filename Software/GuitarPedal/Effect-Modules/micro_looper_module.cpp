@@ -99,8 +99,19 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
 // ============================================================
 // PARAMETER METADATA
 // ============================================================
-static const int s_paramCount = 2;
+static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
+
+static const int s_paramCount = 3;
 static const ParameterMetaData s_metaData[s_paramCount] = {
+    {
+        name : "Loop mode",
+        valueType : ParameterValueType::Binned,
+        valueBinCount : 2,
+        valueBinNames : s_LoopModes,
+        defaultValue : {.uint_value = 0},
+        knobMapping : 0,
+        midiCCMapping : -1
+    },
     {
         name : "Speed",
         valueType : ParameterValueType::Float,
@@ -180,6 +191,7 @@ void MicroLooperModule::ResetBuffer() {
     stretch_playing_head_.Reset();
     playing_head_.Reset();
     recording_head_.Reset();
+    prev_wraparound_count_ = 0;
 
     std::fill(&buffer_[0], &buffer_[0] + kMicroLoopMaxSize, 0.0f);
     s_stretch_state = StretchState::IDLE;
@@ -234,22 +246,27 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     m_audioLeft = inL;
 
     if (is_playing_ && mod_ > 0) {
-        float target_speed = 4.0f * (GetParameterAsFloat(SPEED) - 0.5f);
-        const float smooth_coeff = 0.0008f;
-        smoothed_speed_ += smooth_coeff * (target_speed - smoothed_speed_);
+        float speed = 4.0f * (GetParameterAsFloat(SPEED) - 0.5f);
 
-        playing_head_.SetSpeed(smoothed_speed_);
+        playing_head_.SetSpeed(speed);
         playing_head_.UpdatePosition(mod_);
 
         if (is_recording_) {
             recording_head_.UpdatePosition(mod_);
+            size_t wraparound_count = recording_head_.GetWrapAroundCount();
+            int mode = GetParameterAsBinnedValue(LOOP_MODE);
+            if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
+                armed_stop_ = true;
+                is_recording_ = false;
+            }
+            prev_wraparound_count_ = wraparound_count;
         }
 
         float playing_head_position_f = playing_head_.GetHeadPosition();
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
         if (use_stretched_buffer_) {
-            stretch_playing_head_.SetSpeed(smoothed_speed_);
+            stretch_playing_head_.SetSpeed(speed);
             stretch_playing_head_.UpdatePosition(stretched_ready_length_);
             float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
             size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
@@ -257,7 +274,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
             m_audioLeft += stretched_buffer_[stretch_playing_head_position];
         } else {
-            m_audioLeft += buffer_[playing_head_position];
+            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
         }
     }
 
@@ -281,19 +298,22 @@ bool MicroLooperModule::Poll() {
                 clock_beat_ = false;
                 is_recording_ = true;
                 is_playing_ = true;
+                prev_wraparound_count_ = 0;
             }
         } else {
             ResetBuffer();
             armed_recording_ = false;
             is_recording_ = true;
             is_playing_ = true;
+            prev_wraparound_count_ = 0;
         }
     }
 
     bool immediate_stop = false;
     
     if (armed_stop_) {
-        if (midi_sync_) {
+        int mode = GetParameterAsBinnedValue(LOOP_MODE);
+        if (midi_sync_ && (mode != SAMPLER)) {
             if(clock_beat_) {
                 clock_beat_ = false;
                 immediate_stop = true;

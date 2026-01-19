@@ -15,7 +15,7 @@ static constexpr size_t STRETCH = 20;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 
-static constexpr size_t kMicroLoopMaxSize = 48000 * 5;  // 5 seconds at 48kHz
+static constexpr size_t kMicroLoopMaxSize = static_cast<size_t>(48000 * 0.5f);  // 0.5 seconds at 48kHz
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -26,9 +26,15 @@ class MicroLooperModule : public BaseEffectModule
     ~MicroLooperModule() override;
 
     enum Param {
-        SPEED,
-        LOOP_MIX,
-        PARAM_COUNT
+      LOOP_MODE,
+      SPEED,
+      LOOP_MIX,
+      PARAM_COUNT
+    };
+
+    enum LoopMode {
+      OVERDUB,
+      SAMPLER
     };
 
     void Init(float sample_rate) override;
@@ -59,8 +65,7 @@ class MicroLooperModule : public BaseEffectModule
 
     PlayingHead playing_head_;
     PlayingHead recording_head_;
-
-    float smoothed_speed_ = 1.0f;
+    size_t prev_wraparound_count_ = 0;
 
     void WriteBuffer(float in);
     void StartStretching();
