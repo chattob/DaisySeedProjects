@@ -70,6 +70,7 @@ class MicroLooperModule : public BaseEffectModule
 
     void WriteBuffer(float in);
     void StartStretching();
+    float ReadStretchedSample(size_t idx, bool normalized);
 
     // Stretching state
     bool is_stretching_ = false;

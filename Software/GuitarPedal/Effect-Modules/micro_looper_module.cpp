@@ -183,11 +183,14 @@ void MicroLooperModule::ResetBuffer() {
     is_stretching_      = false;
     streaming_stretch_  = false;
     use_stretched_buffer_ = false;
+    stretched_buffer_normalized_ = false;
     stretched_length_   = 0;
+    stretched_ready_length_ = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
     stretch_total_frames_ = 0;
     stretch_frames_done_ = 0;
+    stretch_output_frames_done_ = 0;
     stretch_clear_pending_ = false;
     stretch_clear_pos_ = 0;
 
@@ -217,8 +220,11 @@ void MicroLooperModule::StartStretching()
     stretch_read_pos_ = 0;
     stretch_write_pos_ = 0;
     stretch_frames_done_ = 0;
+    stretch_output_frames_done_ = 0;
     stretch_total_frames_ = 0;  // Will be calculated when recording stops
     stretched_length_ = kMicroLoopMaxStretchedSize;
+    stretched_ready_length_ = 0;
+    stretched_buffer_normalized_ = false;
 
     is_stretching_ = true;
     use_stretched_buffer_ = false;
@@ -226,6 +232,13 @@ void MicroLooperModule::StartStretching()
     s_stretch_state = StretchState::IDLE;
     stretch_clear_pending_ = true;
     stretch_clear_pos_ = 0;
+    stretch_playing_head_.Reset();
+}
+
+float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
+    // During streaming, avoid dividing by partial norm (can blow up at window edges).
+    (void)normalized;
+    return MicroLooperModule::stretched_buffer_[idx];
 }
 
 void MicroLooperModule::ProcessStereo(float inL, float inR)
@@ -235,6 +248,9 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     // Write to buffer BEFORE updating recording head position
     if (is_recording_) {
         WriteBuffer(inL);
+        if (!is_stretching_ && loop_length_ >= N) {
+            StartStretching();
+        }
     }
 
     if (is_playing_ && mod_ > 0) {
@@ -246,19 +262,24 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
         if (use_stretched_buffer_) {
-            stretch_playing_head_.SetSpeed(speed);
+            size_t stretch_len = is_stretching_ ? stretched_ready_length_ : stretched_length_;
+            if (stretch_len > 0) {
+                stretch_playing_head_.SetSpeed(speed);
 
-            // Read position BEFORE updating
-            float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
-            size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
+                // Read position BEFORE updating
+                float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
+                size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
+                if (stretch_playing_head_position >= stretch_len) {
+                    stretch_playing_head_position %= stretch_len;
+                }
 
-            m_audioLeft += stretched_buffer_[stretch_playing_head_position];
-            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+                m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
+                                                   stretched_buffer_normalized_);
 
-            stretch_playing_head_.UpdatePosition(stretched_ready_length_);
-        } else {
-            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+                stretch_playing_head_.UpdatePosition(stretch_len);
+            }
         }
+        m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
 
         // Update positions AFTER reading
         playing_head_.UpdatePosition(mod_);
@@ -270,7 +291,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
                 armed_stop_ = true;
                 is_recording_ = false;
-                //StartStretching();
             }
             prev_wraparound_count_ = wraparound_count;
             /*if ((loop_length_ >= N) && !is_stretching_) {
@@ -425,10 +445,17 @@ bool MicroLooperModule::Poll() {
                 break;
 
             case StretchState::ADD_TO_OUTPUT:
-                if (stretched_length_ > 0) {
+                if (stretched_length_ > 0 && (stretch_write_pos_ + N) <= stretched_length_) {
                     OLA_AddFrame(stretched_buffer_, s_stretch_norm, stretched_length_, stretch_write_pos_,
                                  s_result_buffer, s_win2);
-                    stretch_write_pos_ = (stretch_write_pos_ + H_OUT) % stretched_length_;
+                    if (stretch_write_pos_ + H_OUT <= stretched_length_) {
+                        stretch_write_pos_ += H_OUT;
+                    }
+                    // Publish ready length every hop for earliest possible playback.
+                    stretched_ready_length_ = stretch_write_pos_;
+                    if (stretched_ready_length_ > 0) {
+                        use_stretched_buffer_ = true;
+                    }
                 }
 
                 s_synth_count++;
@@ -460,12 +487,6 @@ bool MicroLooperModule::Poll() {
                     stretch_read_pos_ = next_read_pos;
                     stretch_frames_done_++;
 
-                    // Make stretched buffer available as soon as we have output
-                    use_stretched_buffer_ = (stretch_frames_done_ > 0);
-                    if (use_stretched_buffer_) {
-                        stretched_ready_length_ = stretch_write_pos_;
-                    }
-
                     s_stretch_state = StretchState::GATHER_FRAME;
                 } else if (recording_done) {
                     // Recording stopped, finalize with actual length
@@ -476,6 +497,7 @@ bool MicroLooperModule::Poll() {
                         stretched_length_ = kMicroLoopMaxStretchedSize;
                     }
                     stretched_ready_length_ = stretched_length_;
+                    use_stretched_buffer_ = (stretched_length_ > 0);
                     if (stretched_length_ > 0) {
                         // Fold the OLA tail back to the start for a circular loop.
                         size_t fold_len = N - H_OUT;
@@ -510,6 +532,8 @@ bool MicroLooperModule::Poll() {
 
                 is_stretching_ = false;
                 streaming_stretch_ = false;
+                stretched_buffer_normalized_ = true;
+                stretched_ready_length_ = stretched_length_;
                 s_stretch_state = StretchState::IDLE;
                 break;
         }
