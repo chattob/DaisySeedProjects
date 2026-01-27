@@ -4,6 +4,7 @@
 #include "Hardware-Modules/guitar_pedal_125b.h"
 #include "Effect-Modules/base_effect_module.h"
 #include "Effect-Modules/micro_looper_module.h"
+#include "Effect-Modules/polyoctave_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -299,16 +300,17 @@ int main(void) {
     g_crossfade.transitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_crossfade.transitionTimeInSeconds);
 
     g_effects.micro_looper = new MicroLooperModule();
+    auto polyoctave = new PolyOctaveModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
 
-    g_effects.micro_looper->SetEnabled(true);
-
     g_effects.chain.push_back(g_effects.micro_looper);
+    g_effects.chain.push_back(polyoctave);
 
     for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
+        effect->SetEnabled(true);
     }
 
     // Size the routes to the real knob count
@@ -319,16 +321,16 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
 
     /*g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
 
-    g_routing.knobs[2].push_back({looper, LooperModule::SPEED});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
+    g_routing.knobs[2].push_back({looper, LooperModule::SPEED});*/
+    g_routing.knobs[1].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    g_routing.knobs[1].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
+    g_routing.knobs[1].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
 
-    g_routing.knobs[3].push_back({looper, LooperModule::SLICE});
+    /*g_routing.knobs[3].push_back({looper, LooperModule::SLICE});
 
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
