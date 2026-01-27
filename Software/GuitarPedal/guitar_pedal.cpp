@@ -319,7 +319,6 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SPEED});
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
 
     /*g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
@@ -400,8 +399,8 @@ int main(void) {
             int minv = (int)(g_cpuLoadMeter.GetMinCpuLoad() * 100.0f + 0.5f);
             int maxv = (int)(g_cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
 
-            //g_hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
-            g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
+            g_hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+            //g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
         }
 
         // Run polling action.

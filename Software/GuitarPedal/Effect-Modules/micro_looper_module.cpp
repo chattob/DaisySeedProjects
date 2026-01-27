@@ -116,7 +116,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         name : "Speed",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.75f},
+        defaultValue : {.float_value = 1.0f},
         knobMapping : 0,
         midiCCMapping : -1
     },
@@ -164,7 +164,7 @@ void MicroLooperModule::Init(float sample_rate)
     s_synth_count = 0;
 }
 
-void MicroLooperModule::AlternateFootswitchPressed() {
+void MicroLooperModule::BypassFootswitchPressed() {
     if (!is_recording_) {
         clock_beat_ = false;
         armed_recording_ = true;
@@ -181,19 +181,21 @@ void MicroLooperModule::ResetBuffer() {
     loop_length_        = 0;
     mod_                = kMicroLoopMaxSize;
     is_stretching_      = false;
+    streaming_stretch_  = false;
     use_stretched_buffer_ = false;
     stretched_length_   = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
     stretch_total_frames_ = 0;
     stretch_frames_done_ = 0;
+    stretch_clear_pending_ = false;
+    stretch_clear_pos_ = 0;
 
     stretch_playing_head_.Reset();
     playing_head_.Reset();
     recording_head_.Reset();
     prev_wraparound_count_ = 0;
 
-    std::fill(&buffer_[0], &buffer_[0] + kMicroLoopMaxSize, 0.0f);
     s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
 }
@@ -210,45 +212,55 @@ void MicroLooperModule::WriteBuffer(float in)
 
 void MicroLooperModule::StartStretching()
 {
-    if(mod_ == 0) {
-        is_stretching_ = false;
-        use_stretched_buffer_ = false;
-        stretched_length_ = 0;
-        return;
-    }
-
+    // Always use streaming mode now
+    streaming_stretch_ = true;
     stretch_read_pos_ = 0;
     stretch_write_pos_ = 0;
     stretch_frames_done_ = 0;
-    stretch_total_frames_ = (mod_ + H_IN - 1) / H_IN;
-    size_t total_synth_frames = stretch_total_frames_ * STRETCH;
-    stretched_length_ = total_synth_frames * H_OUT;
-    if(stretched_length_ == 0) {
-        is_stretching_ = false;
-        use_stretched_buffer_ = false;
-        return;
-    }
-    if(stretched_length_ > kMicroLoopMaxStretchedSize) {
-        stretched_length_ = kMicroLoopMaxStretchedSize;
-    }
-
-    std::fill(&stretched_buffer_[0], &stretched_buffer_[0] + stretched_length_, 0.0f);
-    std::fill(&s_stretch_norm[0], &s_stretch_norm[0] + stretched_length_, 0.0f);
+    stretch_total_frames_ = 0;  // Will be calculated when recording stops
+    stretched_length_ = kMicroLoopMaxStretchedSize;
 
     is_stretching_ = true;
     use_stretched_buffer_ = false;
     s_synth_count = 0;
-    s_stretch_state = StretchState::GATHER_FRAME;
+    s_stretch_state = StretchState::IDLE;
+    stretch_clear_pending_ = true;
+    stretch_clear_pos_ = 0;
 }
 
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
     m_audioLeft = inL;
 
-    if (is_playing_ && mod_ > 0) {
-        float speed = 4.0f * (GetParameterAsFloat(SPEED) - 0.5f);
+    // Write to buffer BEFORE updating recording head position
+    if (is_recording_) {
+        WriteBuffer(inL);
+    }
 
+    if (is_playing_ && mod_ > 0) {
+        float speed = GetParameterAsFloat(SPEED);
         playing_head_.SetSpeed(speed);
+
+        // Read position BEFORE updating
+        float playing_head_position_f = playing_head_.GetHeadPosition();
+        size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
+
+        if (use_stretched_buffer_) {
+            stretch_playing_head_.SetSpeed(speed);
+
+            // Read position BEFORE updating
+            float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
+            size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
+
+            m_audioLeft += stretched_buffer_[stretch_playing_head_position];
+            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+
+            stretch_playing_head_.UpdatePosition(stretched_ready_length_);
+        } else {
+            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+        }
+
+        // Update positions AFTER reading
         playing_head_.UpdatePosition(mod_);
 
         if (is_recording_) {
@@ -258,31 +270,16 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
                 armed_stop_ = true;
                 is_recording_ = false;
+                //StartStretching();
             }
             prev_wraparound_count_ = wraparound_count;
-        }
-
-        float playing_head_position_f = playing_head_.GetHeadPosition();
-        size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
-
-        if (use_stretched_buffer_) {
-            stretch_playing_head_.SetSpeed(speed);
-            stretch_playing_head_.UpdatePosition(stretched_ready_length_);
-            float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
-            size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
-
-            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
-            m_audioLeft += stretched_buffer_[stretch_playing_head_position];
-        } else {
-            m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+            /*if ((loop_length_ >= N) && !is_stretching_) {
+                StartStretching();
+            }*/
         }
     }
 
     m_audioRight = m_audioLeft;
-
-    if (is_recording_) {
-        WriteBuffer(inL);
-    }
 }
 
 // ============================================================
@@ -332,17 +329,37 @@ bool MicroLooperModule::Poll() {
         armed_stop_ = false;
         is_recording_ = false;
         is_playing_ = true;
-        StartStretching();
     }
 
     if (is_stretching_) {
+        if (stretch_clear_pending_) {
+            size_t remaining = stretched_length_ - stretch_clear_pos_;
+            size_t count = (remaining < kStretchClearChunk) ? remaining : kStretchClearChunk;
+            if (count > 0) {
+                std::fill(stretched_buffer_ + stretch_clear_pos_,
+                          stretched_buffer_ + stretch_clear_pos_ + count, 0.0f);
+                std::fill(s_stretch_norm + stretch_clear_pos_,
+                          s_stretch_norm + stretch_clear_pos_ + count, 0.0f);
+                stretch_clear_pos_ += count;
+            }
+            if (stretch_clear_pos_ >= stretched_length_) {
+                stretch_clear_pending_ = false;
+                s_stretch_state = StretchState::GATHER_FRAME;
+            }
+            return true;
+        }
+
         switch(s_stretch_state) {
             case StretchState::IDLE:
                 break;
 
             case StretchState::GATHER_FRAME:
-                GatherFrameFromBuffer(s_snapshot_buffer, buffer_, mod_, stretch_read_pos_);
-                s_stretch_state = StretchState::APPLY_ANALYSIS_WINDOW;
+                {
+                    // Use loop_length_ if still recording, otherwise mod_
+                    size_t buffer_len = is_recording_ ? loop_length_ : mod_;
+                    GatherFrameFromBuffer(s_snapshot_buffer, buffer_, buffer_len, stretch_read_pos_);
+                    s_stretch_state = StretchState::APPLY_ANALYSIS_WINDOW;
+                }
                 break;
 
             case StretchState::APPLY_ANALYSIS_WINDOW:
@@ -427,26 +444,60 @@ bool MicroLooperModule::Poll() {
                 }
                 break;
 
-            case StretchState::ADVANCE_READ:
-                if (mod_ > 0) {
-                    stretch_read_pos_ = (stretch_read_pos_ + H_IN) % mod_;
-                } else {
-                    stretch_read_pos_ = 0;
-                }
-                stretch_frames_done_++;
+            case StretchState::ADVANCE_READ:{
+                // Use loop_length_ if still recording, otherwise mod_
+                size_t available_samples = is_recording_ ? loop_length_ : mod_;
 
-                use_stretched_buffer_ = (stretch_frames_done_ > 0);
-                if (use_stretched_buffer_) {
-                    stretched_ready_length_ = stretch_write_pos_;
-                }
+                // Calculate next read position
+                size_t next_read_pos = stretch_read_pos_ + H_IN;
 
-                if (stretch_frames_done_ >= stretch_total_frames_) {
-                    s_stretch_state = StretchState::DONE;
-                    stretched_ready_length_ = stretched_length_;
-                } else {
+                // Check if we have enough samples for a full frame
+                bool next_frame_available = (next_read_pos + N <= available_samples);
+                bool recording_done = !is_recording_;
+
+                if (next_frame_available) {
+                    // Advance and continue processing
+                    stretch_read_pos_ = next_read_pos;
+                    stretch_frames_done_++;
+
+                    // Make stretched buffer available as soon as we have output
+                    use_stretched_buffer_ = (stretch_frames_done_ > 0);
+                    if (use_stretched_buffer_) {
+                        stretched_ready_length_ = stretch_write_pos_;
+                    }
+
                     s_stretch_state = StretchState::GATHER_FRAME;
+                } else if (recording_done) {
+                    // Recording stopped, finalize with actual length
+                    stretch_total_frames_ = stretch_frames_done_;
+                    size_t total_synth_frames = stretch_total_frames_ * STRETCH;
+                    stretched_length_ = total_synth_frames * H_OUT;
+                    if (stretched_length_ > kMicroLoopMaxStretchedSize) {
+                        stretched_length_ = kMicroLoopMaxStretchedSize;
+                    }
+                    stretched_ready_length_ = stretched_length_;
+                    if (stretched_length_ > 0) {
+                        // Fold the OLA tail back to the start for a circular loop.
+                        size_t fold_len = N - H_OUT;
+                        if (fold_len > stretched_length_) {
+                            fold_len = stretched_length_;
+                        }
+                        if (stretched_length_ + fold_len > kMicroLoopMaxStretchedSize) {
+                            fold_len = kMicroLoopMaxStretchedSize - stretched_length_;
+                        }
+                        for (size_t i = 0; i < fold_len; ++i) {
+                            size_t tail_idx = stretched_length_ + i;
+                            stretched_buffer_[i] += stretched_buffer_[tail_idx];
+                            s_stretch_norm[i] += s_stretch_norm[tail_idx];
+                            stretched_buffer_[tail_idx] = 0.0f;
+                            s_stretch_norm[tail_idx] = 0.0f;
+                        }
+                    }
+                    s_stretch_state = StretchState::DONE;
                 }
+                // else: wait (stay in ADVANCE_READ until more data arrives)
                 break;
+            }
 
             case StretchState::DONE:
                 if (stretched_length_ > 0) {
@@ -458,6 +509,7 @@ bool MicroLooperModule::Poll() {
                 }
 
                 is_stretching_ = false;
+                streaming_stretch_ = false;
                 s_stretch_state = StretchState::IDLE;
                 break;
         }

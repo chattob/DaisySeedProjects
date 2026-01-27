@@ -2,6 +2,7 @@
 
 void PlayingHead::Reset() {
     head_position_f_ = 0.0f;
+    wrap_around_count_ = 0;
 }
 
 static inline float wrapf(float x, float L)

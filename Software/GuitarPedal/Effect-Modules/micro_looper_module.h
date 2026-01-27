@@ -9,13 +9,14 @@ namespace bkshepherd
 // ============================================================
 // FFT CONFIGURATION
 // ============================================================
-static constexpr size_t N = 16384;          // FFT size
+static constexpr size_t N = 8192;          // FFT size
 static constexpr size_t H_IN = N / 2;      // Input hop (analysis)
-static constexpr size_t STRETCH = 20;       // Stretch factor
+static constexpr size_t STRETCH = 40;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
+static constexpr size_t kStretchClearChunk = 2048;
 
-static constexpr size_t kMicroLoopMaxSize = static_cast<size_t>(48000 * 0.5f);  // 0.5 seconds at 48kHz
+static constexpr size_t kMicroLoopMaxSize = 16384 * 2;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -40,7 +41,7 @@ class MicroLooperModule : public BaseEffectModule
     void Init(float sample_rate) override;
     void ProcessStereo(float inL, float inR) override;
     bool Poll() override;
-    void AlternateFootswitchPressed() override;
+    void BypassFootswitchPressed() override;
     float GetBrightnessForLED(int led_id) const override;
 
   private:
@@ -72,6 +73,7 @@ class MicroLooperModule : public BaseEffectModule
 
     // Stretching state
     bool is_stretching_ = false;
+    bool streaming_stretch_ = false;   // True when stretching while still recording
     bool use_stretched_buffer_ = false;
     bool stretched_buffer_normalized_ = false;
     size_t stretch_read_pos_ = 0;      // Position in source buffer_
@@ -82,6 +84,8 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretch_frames_done_ = 0;
     size_t stretch_output_frames_done_ = 0;
     PlayingHead stretch_playing_head_;
+    bool stretch_clear_pending_ = false;
+    size_t stretch_clear_pos_ = 0;
 };
 
 } // namespace bkshepherd
