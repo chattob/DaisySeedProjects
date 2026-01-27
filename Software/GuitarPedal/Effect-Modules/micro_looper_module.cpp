@@ -24,6 +24,8 @@ enum class StretchState {
     DONE
 };
 
+constexpr float eps = 1e-12f;
+
 // RNG for phase randomization
 struct XorShift32 {
     uint32_t state = 0x12345678u;
@@ -101,7 +103,7 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
 // ============================================================
 static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
 
-static const int s_paramCount = 3;
+static const int s_paramCount = 5;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Loop mode",
@@ -121,11 +123,27 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         midiCCMapping : -1
     },
     {
+        name : "Freeze mix",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 1,
+        midiCCMapping : -1
+    },
+    {
         name : "Loop mix",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 0.0f},
-        knobMapping : 1,
+        knobMapping : 2,
+        midiCCMapping : -1
+    },
+    {
+        name : "Sensitivity",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 0.5f},
+        knobMapping : 3,
         midiCCMapping : -1
     },
 };
@@ -162,6 +180,24 @@ void MicroLooperModule::Init(float sample_rate)
     // Reset state
     s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
+
+    // Initialize envelope follower coefficients
+    auto ms_to_coeff = [&](float ms) {
+        float t = ms * 0.001f;
+        return 1.0f - expf(-1.0f / (sample_rate * t));
+    };
+    a_att_ = ms_to_coeff(attack_ms_);
+    a_rel_ = ms_to_coeff(release_ms_);
+
+    // Pre-compute sample counts for auto-start timing
+    start_hold_samps_ = static_cast<uint32_t>(sample_rate * start_hold_ms_ * 0.001f);
+    rearm_samps_ = static_cast<uint32_t>(sample_rate * rearm_ms_ * 0.001f);
+
+    // Initialize auto-start state
+    env_ = 0.0f;
+    above_count_ = 0;
+    below_count_ = 0;
+    auto_armed_ = true;
 }
 
 void MicroLooperModule::BypassFootswitchPressed() {
@@ -201,6 +237,59 @@ void MicroLooperModule::ResetBuffer() {
 
     s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
+
+    // Reset auto-start counters (keep auto_armed_ state)
+    above_count_ = 0;
+    below_count_ = 0;
+}
+
+void MicroLooperModule::UpdateEnv(float x_abs)
+{
+    float a = (x_abs > env_) ? a_att_ : a_rel_;
+    env_ += a * (x_abs - env_);
+}
+
+void MicroLooperModule::AutoStartLogic()
+{
+    if (!auto_start_enabled_) {
+        return;
+    }
+
+    // Scale thresholds by sensitivity parameter (0-1)
+    // sensitivity=0 → high threshold (hard to trigger)
+    // sensitivity=1 → low threshold (easy to trigger)
+    float sensitivity = GetParameterAsFloat(SENSITIVITY);
+
+    if (sensitivity < eps) {
+        return;
+    }
+
+    float thr_on = threshold_on_ + (threshold_on_min_ - threshold_on_) * sensitivity;
+    float thr_off = thr_on * 0.6f;  // maintain hysteresis ratio
+
+    if (!auto_armed_ || is_recording_) {
+        // Re-arm when quiet for long enough
+        if (env_ < thr_off) {
+            if (++below_count_ >= rearm_samps_) {
+                auto_armed_ = true;
+                below_count_ = 0;
+            }
+        } else {
+            below_count_ = 0;
+        }
+        return;
+    }
+
+    // Not recording, armed: wait for loudness
+    if (env_ >= thr_on) {
+        if (++above_count_ >= start_hold_samps_) {
+            armed_recording_ = true;   // reuse existing start path in Poll()
+            auto_armed_ = false;
+            above_count_ = 0;
+        }
+    } else {
+        above_count_ = 0;
+    }
 }
 
 void MicroLooperModule::WriteBuffer(float in)
@@ -245,6 +334,11 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
     m_audioLeft = inL;
 
+    // Envelope follower + auto-start logic (runs every sample)
+    float x = 0.5f * (fabsf(inL) + fabsf(inR));
+    UpdateEnv(x);
+    AutoStartLogic();
+
     // Write to buffer BEFORE updating recording head position
     if (is_recording_) {
         WriteBuffer(inL);
@@ -274,7 +368,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 }
 
                 m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
-                                                   stretched_buffer_normalized_);
+                                                   stretched_buffer_normalized_) * GetParameterAsFloat(FREEZE_MIX);
 
                 stretch_playing_head_.UpdatePosition(stretch_len);
             }
@@ -523,7 +617,6 @@ bool MicroLooperModule::Poll() {
 
             case StretchState::DONE:
                 if (stretched_length_ > 0) {
-                    constexpr float eps = 1e-12f;
                     for (size_t i = 0; i < stretched_length_; ++i) {
                         float norm = s_stretch_norm[i];
                         stretched_buffer_[i] = (fabsf(norm) > eps) ? (stretched_buffer_[i] / norm) : 0.0f;

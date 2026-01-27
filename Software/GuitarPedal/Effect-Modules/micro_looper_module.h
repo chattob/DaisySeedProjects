@@ -29,7 +29,9 @@ class MicroLooperModule : public BaseEffectModule
     enum Param {
       LOOP_MODE,
       SPEED,
+      FREEZE_MIX,
       LOOP_MIX,
+      SENSITIVITY,
       PARAM_COUNT
     };
 
@@ -87,6 +89,37 @@ class MicroLooperModule : public BaseEffectModule
     PlayingHead stretch_playing_head_;
     bool stretch_clear_pending_ = false;
     size_t stretch_clear_pos_ = 0;
+
+    // ============================================================
+    // AUTO-START (envelope follower + threshold + hysteresis)
+    // ============================================================
+    void UpdateEnv(float x_abs);
+    void AutoStartLogic();
+
+    // Envelope follower state
+    float env_ = 0.0f;
+    float a_att_ = 0.0f;   // attack coefficient
+    float a_rel_ = 0.0f;   // release coefficient
+
+    // Trigger state (sample counters)
+    uint32_t above_count_ = 0;
+    uint32_t below_count_ = 0;
+    bool auto_armed_ = true;
+    bool auto_start_enabled_ = true;  // master enable for auto-start
+
+    // Auto-start parameters (defaults tuned for guitar)
+    // Linear interpolation: thr = threshold_on_ + (threshold_on_min_ - threshold_on_) * sensitivity
+    // At sensitivity=0.5: (0.055 + 0.005) / 2 = 0.03
+    float threshold_on_ = 0.1f;     // threshold at sensitivity=0 (hard to trigger)
+    float threshold_on_min_ = 0.005f; // threshold at sensitivity=1 (easy to trigger)
+    float attack_ms_ = 8.0f;          // envelope attack time
+    float release_ms_ = 200.0f;       // envelope release time
+    float start_hold_ms_ = 25.0f;     // must stay above threshold_on_ this long
+    float rearm_ms_ = 500.0f;         // must stay below threshold_off_ this long
+
+    // Pre-computed sample counts (updated in Init)
+    uint32_t start_hold_samps_ = 0;
+    uint32_t rearm_samps_ = 0;
 };
 
 } // namespace bkshepherd
