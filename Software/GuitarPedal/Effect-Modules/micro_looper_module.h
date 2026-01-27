@@ -29,6 +29,7 @@ class MicroLooperModule : public BaseEffectModule
     enum Param {
       LOOP_MODE,
       SPEED,
+      IN_MIX,
       FREEZE_MIX,
       LOOP_MIX,
       SENSITIVITY,

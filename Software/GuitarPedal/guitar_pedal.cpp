@@ -5,6 +5,8 @@
 #include "Effect-Modules/base_effect_module.h"
 #include "Effect-Modules/micro_looper_module.h"
 #include "Effect-Modules/polyoctave_module.h"
+#include "Effect-Modules/delay_module.h"
+#include "Effect-Modules/distortion_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -223,6 +225,11 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     }
 
     for (size_t i = 0; i < size; i++) {
+        crossFadeTarget[0][i] += in[0][i];
+        crossFadeTarget[1][i] += in[1][i];
+    }
+
+    for (size_t i = 0; i < size; i++) {
         if (g_crossfade.isCrossFading) {
             float crossFadeFactor = (float)g_crossfade.samplesTilComplete / (float)g_crossfade.transitionTimeInSamples;
 
@@ -301,12 +308,30 @@ int main(void) {
 
     g_effects.micro_looper = new MicroLooperModule();
     auto polyoctave = new PolyOctaveModule();
+    auto delay = new DelayModule();
+    auto distortion = new DistortionModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
+    g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
+
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
+    delay->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
+    delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, 2);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, 6);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_FREQ, 0.65f);
+
+    distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
+    distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
+    distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 0);
+    distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
     g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(polyoctave);
+    g_effects.chain.push_back(delay);
+    g_effects.chain.push_back(distortion);
 
     for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
@@ -332,12 +357,10 @@ int main(void) {
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
 
-    /*g_routing.knobs[3].push_back({looper, LooperModule::SLICE});
-
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});*/
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);

@@ -103,7 +103,7 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
 // ============================================================
 static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
 
-static const int s_paramCount = 5;
+static const int s_paramCount = 6;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Loop mode",
@@ -120,6 +120,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
         knobMapping : 0,
+        midiCCMapping : -1
+    },
+    {
+        name : "Input mix",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 1,
         midiCCMapping : -1
     },
     {
@@ -332,7 +340,7 @@ float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
 
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
-    m_audioLeft = inL;
+    m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
 
     // Envelope follower + auto-start logic (runs every sample)
     float x = 0.5f * (fabsf(inL) + fabsf(inR));
