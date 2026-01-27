@@ -137,7 +137,6 @@ class DelayModule : public BaseEffectModule {
 
     void Init(float sample_rate) override;
     void UpdateLEDRate();
-    void CalculateDelayMix();
     void ParameterChanged(int parameter_id) override;
     void ProcessModulation(size_t size);
     void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;

@@ -151,22 +151,6 @@ void DelayModule::UpdateLEDRate() {
     led_osc.SetFreq(delayFreq / 2.0);
 }
 
-void DelayModule::CalculateDelayMix() {
-    // Handle Normal or Alternate Mode Mix Controls
-    //    A computationally cheap mostly energy constant crossfade from SignalSmith Blog
-    //    https://signalsmith-audio.co.uk/writing/2021/cheap-energy-crossfade/
-
-    float delMixKnob = GetParameterAsFloat(2);
-    float x2 = 1.0 - delMixKnob;
-    float A = delMixKnob * x2;
-    float B = A * (1.0 + 1.4186 * A);
-    float C = B + delMixKnob;
-    float D = B + x2;
-
-    delayWetMix = C * C;
-    delayDryMix = D * D;
-}
-
 void DelayModule::Init(float sample_rate) {
     BaseEffectModule::Init(sample_rate);
 
@@ -206,14 +190,18 @@ void DelayModule::Init(float sample_rate) {
 
     modTape.Init(sample_rate);
 
-    CalculateDelayMix();
+    auto gains = EnergyCrossfade(GetParameterAsFloat(2));
+    delayWetMix = gains.wet;
+    delayDryMix = gains.dry;
 }
 
 void DelayModule::ParameterChanged(int parameter_id) {
     if (parameter_id == 0) { // Delay Time
         UpdateLEDRate();
     } else if (parameter_id == 2) { // Delay Mix
-        CalculateDelayMix();
+        auto gains = EnergyCrossfade(GetParameterAsFloat(2));
+        delayWetMix = gains.wet;
+        delayDryMix = gains.dry;
     } else if (parameter_id == 3) { // Delay Mode
         int delay_mode_temp = (GetParameterAsBinnedValue(3) - 1);
         if (delay_mode_temp > 0) {

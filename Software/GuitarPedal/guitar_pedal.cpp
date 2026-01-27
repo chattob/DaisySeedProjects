@@ -7,6 +7,7 @@
 #include "Effect-Modules/polyoctave_module.h"
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/distortion_module.h"
+#include "Effect-Modules/crusher_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -224,10 +225,10 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    for (size_t i = 0; i < size; i++) {
+    /*for (size_t i = 0; i < size; i++) {
         crossFadeTarget[0][i] += in[0][i];
         crossFadeTarget[1][i] += in[1][i];
-    }
+    }*/
 
     for (size_t i = 0; i < size; i++) {
         if (g_crossfade.isCrossFading) {
@@ -306,10 +307,11 @@ int main(void) {
     g_bypass.bypassToggleTransitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_bypass.bypassToggleTransitionTimeInSeconds);
     g_crossfade.transitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_crossfade.transitionTimeInSeconds);
 
-    g_effects.micro_looper = new MicroLooperModule();
-    auto polyoctave = new PolyOctaveModule();
-    auto delay = new DelayModule();
-    auto distortion = new DistortionModule();
+    g_effects.micro_looper  = new MicroLooperModule();
+    auto polyoctave         = new PolyOctaveModule();
+    auto delay              = new DelayModule();
+    auto distortion         = new DistortionModule();
+    auto crusher            = new CrusherModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
@@ -328,10 +330,11 @@ int main(void) {
     distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 0);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
-    g_effects.chain.push_back(g_effects.micro_looper);
+    /*g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(distortion);
+    g_effects.chain.push_back(distortion);*/
+    g_effects.chain.push_back(crusher);
 
     for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
@@ -346,13 +349,12 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+    /*g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
+
     g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
 
-    /*g_routing.knobs[1].push_back({looper, LooperModule::FADING, [](float x) { return (1.0f - x); }});
-
-    g_routing.knobs[2].push_back({looper, LooperModule::SPEED});*/
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
@@ -360,7 +362,12 @@ int main(void) {
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});*/
+    g_routing.knobs[0].push_back({crusher, CrusherModule::LEVEL});
+    g_routing.knobs[1].push_back({crusher, CrusherModule::BITS});
+    g_routing.knobs[2].push_back({crusher, CrusherModule::RATE});
+    g_routing.knobs[3].push_back({crusher, CrusherModule::CUTOFF});
+    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
