@@ -455,6 +455,8 @@ int main(void) {
             int maxv = (int)(g_cpuLoadMeter.GetMaxCpuLoad() * 100.0f + 0.5f);
 
             g_hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
+            g_hardware.seed.PrintLine("sizeof MicroLooperModule: %d", sizeof(MicroLooperModule));
+
             //g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
         }
 

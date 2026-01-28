@@ -10,8 +10,8 @@ namespace bkshepherd
 // FFT CONFIGURATION
 // ============================================================
 static constexpr size_t N = 4096;          // FFT size
-static constexpr size_t H_IN = N / 2;      // Input hop (analysis)
-static constexpr size_t STRETCH = 80;       // Stretch factor
+static constexpr size_t H_IN = N / 8;      // Input hop (analysis)
+static constexpr size_t STRETCH = 10;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 4096;
@@ -84,10 +84,10 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretch_write_pos_ = 0;     // Position in stretched_buffer_
     size_t stretch_total_frames_ = 0;
     size_t stretch_frames_done_ = 0;
-    size_t stretch_output_frames_done_ = 0;
     PlayingHead stretch_playing_head_;
     bool stretch_clear_pending_ = false;
     size_t stretch_clear_pos_ = 0;
+    float stretch_speed_ = 1.0f;
 
     // Double-buffering for stretched playback
     // active_stretch_buffer_: false = A is playing, true = B is playing

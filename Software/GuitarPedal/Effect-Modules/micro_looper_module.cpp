@@ -232,7 +232,6 @@ void MicroLooperModule::ResetBuffer() {
     stretch_write_pos_  = 0;
     stretch_total_frames_ = 0;
     stretch_frames_done_ = 0;
-    stretch_output_frames_done_ = 0;
     stretch_clear_pending_ = false;
     stretch_clear_pos_ = 0;
 
@@ -319,7 +318,6 @@ void MicroLooperModule::StartStretching()
     stretch_read_pos_ = 0;
     stretch_write_pos_ = 0;
     stretch_frames_done_ = 0;
-    stretch_output_frames_done_ = 0;
     stretch_total_frames_ = 0;  // Will be calculated when recording stops
 
     // Double-buffering: write to the inactive buffer
@@ -399,8 +397,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             }
 
             if (stretch_len > 0) {
-                stretch_playing_head_.SetSpeed(speed);
-
                 // Read position BEFORE updating
                 float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
                 size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
@@ -411,7 +407,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
                                                    normalized) * GetParameterAsFloat(FREEZE_MIX);
 
+                uint16_t stretch_wraparound_count = stretch_playing_head_.GetWrapAroundCount();                                  
                 stretch_playing_head_.UpdatePosition(stretch_len);
+                if (stretch_wraparound_count != stretch_playing_head_.GetWrapAroundCount()) {
+                    stretch_speed_ = stretch_speed_ > 0.0f ? -1.0f : 1.0f;
+                    stretch_playing_head_.SetSpeed(stretch_speed_);
+                    stretch_playing_head_.UpdatePosition(stretch_len);
+                }
             }
         }
         m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
@@ -681,12 +683,12 @@ bool MicroLooperModule::Poll() {
             case StretchState::DONE:{
                 // Normalize the write buffer (which is now the active buffer)
                 size_t final_length = write_stretch_buffer_ ? stretched_length_b_ : stretched_length_a_;
-                if (final_length > 0) {
+                /*if (final_length > 0) {
                     for (size_t i = 0; i < final_length; ++i) {
                         float norm = write_norm[i];
                         write_buffer[i] = (fabsf(norm) > eps) ? (write_buffer[i] / norm) : 0.0f;
                     }
-                }
+                }*/
 
                 // Mark write buffer as normalized
                 if (write_stretch_buffer_) {
