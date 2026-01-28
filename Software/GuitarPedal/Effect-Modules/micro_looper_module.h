@@ -9,14 +9,14 @@ namespace bkshepherd
 // ============================================================
 // FFT CONFIGURATION
 // ============================================================
-static constexpr size_t N = 8192;          // FFT size
+static constexpr size_t N = 4096;          // FFT size
 static constexpr size_t H_IN = N / 2;      // Input hop (analysis)
-static constexpr size_t STRETCH = 40;       // Stretch factor
+static constexpr size_t STRETCH = 80;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
-static constexpr size_t kStretchClearChunk = 2048;
+static constexpr size_t kStretchClearChunk = 4096;
 
-static constexpr size_t kMicroLoopMaxSize = 16384 * 2;
+static constexpr size_t kMicroLoopMaxSize = N * 4;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -122,10 +122,10 @@ class MicroLooperModule : public BaseEffectModule
     // Linear interpolation: thr = threshold_on_ + (threshold_on_min_ - threshold_on_) * sensitivity
     // At sensitivity=0.5: (0.055 + 0.005) / 2 = 0.03
     float threshold_on_ = 0.1f;     // threshold at sensitivity=0 (hard to trigger)
-    float threshold_on_min_ = 0.005f; // threshold at sensitivity=1 (easy to trigger)
+    float threshold_on_min_ = 0.001f; // threshold at sensitivity=1 (easy to trigger)
     float attack_ms_ = 8.0f;          // envelope attack time
     float release_ms_ = 200.0f;       // envelope release time
-    float start_hold_ms_ = 25.0f;     // must stay above threshold_on_ this long
+    float start_hold_ms_ = 10.0f;     // must stay above threshold_on_ this long
     float rearm_ms_ = 500.0f;         // must stay below threshold_off_ this long
 
     // Pre-computed sample counts (updated in Init)

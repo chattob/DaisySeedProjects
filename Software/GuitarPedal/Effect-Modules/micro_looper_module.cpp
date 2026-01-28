@@ -591,17 +591,6 @@ bool MicroLooperModule::Poll() {
                     if (stretch_write_pos_ + H_OUT <= write_length) {
                         stretch_write_pos_ += H_OUT;
                     }
-                    // Publish ready length every hop for earliest possible playback.
-                    if (write_stretch_buffer_) {
-                        stretched_ready_length_b_ = stretch_write_pos_;
-                    } else {
-                        stretched_ready_length_a_ = stretch_write_pos_;
-                    }
-                    // Switch to new buffer as soon as first data is ready
-                    if (stretch_write_pos_ > 0) {
-                        active_stretch_buffer_ = write_stretch_buffer_;
-                        use_stretched_buffer_ = true;
-                    }
                 }
 
                 s_synth_count++;
@@ -610,6 +599,18 @@ bool MicroLooperModule::Poll() {
 
             case StretchState::CHECK_MORE_SYNTH:
                 if(s_synth_count < STRETCH) {
+                    // First input frame  stretched - switch to new buffer
+                    if (s_synth_count >= 1) {
+                        if (write_stretch_buffer_) {
+                            stretched_ready_length_b_ = stretch_write_pos_;
+                        } else {
+                            stretched_ready_length_a_ = stretch_write_pos_;
+                        }
+                        if (active_stretch_buffer_ != write_stretch_buffer_) {
+                            active_stretch_buffer_ = write_stretch_buffer_;
+                            use_stretched_buffer_ = true;
+                        }
+                    }
                     s_stretch_state = StretchState::RANDOMIZE_PHASES;
                 } else {
                     s_synth_count = 0;
@@ -628,10 +629,12 @@ bool MicroLooperModule::Poll() {
                 bool next_frame_available = (next_read_pos + N <= available_samples);
                 bool recording_done = !is_recording_;
 
+                // Count the frame we just finished processing
+                stretch_frames_done_++;
+
                 if (next_frame_available) {
                     // Advance and continue processing
                     stretch_read_pos_ = next_read_pos;
-                    stretch_frames_done_++;
 
                     s_stretch_state = StretchState::GATHER_FRAME;
                 } else if (recording_done) {

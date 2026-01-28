@@ -15,6 +15,7 @@ class FilterModule : public BaseEffectModule
     enum Param {
         CUTOFF = 0,
         HP_MODE,
+        LEVEL,
         PARAM_COUNT
     };
 

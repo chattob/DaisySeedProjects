@@ -2,7 +2,7 @@
 
 using namespace bkshepherd;
 
-static const int s_paramCount = 2;
+static const int s_paramCount = 3;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Cutoff",
@@ -20,6 +20,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         knobMapping : 1,
         midiCCMapping : -1
     },
+    {
+        name : "Level",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 2,
+        midiCCMapping : -1
+    }
 };
 
 // Default Constructor
@@ -75,12 +83,12 @@ void FilterModule::ParameterChanged(int parameter_id)
 {
     if(parameter_id == 0)
     {
-        cutoff_norm_ = GetParameterAsFloat(0);
+        cutoff_norm_ = GetParameterAsFloat(CUTOFF);
         UpdateFilters();
     }
     else if(parameter_id == 1)
     {
-        hp_mode_ = GetParameterAsBool(1);
+        hp_mode_ = GetParameterAsBool(HP_MODE);
         // No need to reconfig filters, only routing changes.
     }
 }
@@ -103,8 +111,8 @@ void FilterModule::ProcessMono(float in)
         out = lp_filter_(in); // low-pass
 
     // Mono effect: same on both channels
-    m_audioLeft  = out;
-    m_audioRight = out;
+    m_audioLeft  = GetParameterAsFloat(LEVEL) * out;
+    m_audioRight = m_audioLeft;
 }
 
 void FilterModule::ProcessStereo(float inL, float inR)

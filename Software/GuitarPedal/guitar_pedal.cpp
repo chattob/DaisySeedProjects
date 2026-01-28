@@ -8,6 +8,7 @@
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/crusher_module.h"
+#include "Effect-Modules/filter_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -24,6 +25,7 @@ CpuLoadMeter g_cpuLoadMeter;
 struct {
     std::vector<BaseEffectModule*> chain;
     MicroLooperModule* micro_looper = nullptr;
+    FilterModule* mixer = nullptr;
     bool preFXmode = false;
 } g_effects;
 
@@ -225,9 +227,14 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    for (size_t i = 0; i < size; i++) {
-        crossFadeTarget[0][i] += in[0][i];
-        crossFadeTarget[1][i] += in[1][i];
+    float mixedInputBuffer[2][kBlockSize];   // actual audio data
+    float* mixedInput[2] = { mixedInputBuffer[0], mixedInputBuffer[1] }; // pointers
+
+    g_effects.mixer->ProcessStereoBlock(in, mixedInput, size);
+
+    for (size_t i = 0; i < size; i++) {    
+        crossFadeTarget[0][i] += mixedInput[0][i];
+        crossFadeTarget[1][i] += mixedInput[1][i];
     }
 
     for (size_t i = 0; i < size; i++) {
@@ -313,9 +320,14 @@ int main(void) {
     auto distortion         = new DistortionModule();
     auto crusher            = new CrusherModule();
 
+    g_effects.mixer = new FilterModule();
+    g_effects.mixer->SetParameterAsBool(FilterModule::HP_MODE, false);
+    g_effects.mixer->SetParameterAsFloat(FilterModule::CUTOFF, 8000.0f);
+
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
     g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
+    g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::FREEZE_MIX, 1.0f);
 
     delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
@@ -345,6 +357,7 @@ int main(void) {
         effect->Init(sample_rate);
         effect->SetEnabled(true);
     }
+    g_effects.mixer->SetEnabled(true);
 
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
@@ -354,7 +367,8 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+    //g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+    g_routing.knobs[0].push_back({g_effects.mixer, FilterModule::LEVEL});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
 
@@ -368,7 +382,7 @@ int main(void) {
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 2 * (x - 0.5f); }});
-    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 0.4f + 0.3f; }});
+    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 1.2f + 0.4f; }});
 
     /*g_routing.knobs[0].push_back({crusher, CrusherModule::LEVEL});
     g_routing.knobs[1].push_back({crusher, CrusherModule::BITS});
