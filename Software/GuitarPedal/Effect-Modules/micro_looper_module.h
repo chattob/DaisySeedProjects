@@ -52,7 +52,8 @@ class MicroLooperModule : public BaseEffectModule
 
     // Loop buffer - stored in SDRAM
     static float DSY_SDRAM_BSS buffer_[kMicroLoopMaxSize];
-    static float DSY_SDRAM_BSS stretched_buffer_[kMicroLoopMaxStretchedSize];
+    static float DSY_SDRAM_BSS stretched_buffer_a_[kMicroLoopMaxStretchedSize];
+    static float DSY_SDRAM_BSS stretched_buffer_b_[kMicroLoopMaxStretchedSize];
 
     // Recording state
     bool midi_sync_ = false;
@@ -79,17 +80,26 @@ class MicroLooperModule : public BaseEffectModule
     bool is_stretching_ = false;
     bool streaming_stretch_ = false;   // True when stretching while still recording
     bool use_stretched_buffer_ = false;
-    bool stretched_buffer_normalized_ = false;
     size_t stretch_read_pos_ = 0;      // Position in source buffer_
     size_t stretch_write_pos_ = 0;     // Position in stretched_buffer_
-    size_t stretched_length_ = 0;      // Final length of stretched buffer
-    size_t stretched_ready_length_ = 0;
     size_t stretch_total_frames_ = 0;
     size_t stretch_frames_done_ = 0;
     size_t stretch_output_frames_done_ = 0;
     PlayingHead stretch_playing_head_;
     bool stretch_clear_pending_ = false;
     size_t stretch_clear_pos_ = 0;
+
+    // Double-buffering for stretched playback
+    // active_stretch_buffer_: false = A is playing, true = B is playing
+    // write_stretch_buffer_: false = writing to A, true = writing to B
+    bool active_stretch_buffer_ = false;
+    bool write_stretch_buffer_ = false;
+    size_t stretched_length_a_ = 0;
+    size_t stretched_length_b_ = 0;
+    size_t stretched_ready_length_a_ = 0;
+    size_t stretched_ready_length_b_ = 0;
+    bool stretched_buffer_normalized_a_ = false;
+    bool stretched_buffer_normalized_b_ = false;
 
     // ============================================================
     // AUTO-START (envelope follower + threshold + hysteresis)

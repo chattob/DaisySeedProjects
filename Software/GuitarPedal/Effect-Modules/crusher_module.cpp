@@ -46,8 +46,8 @@ static const ParameterMetaData s_metaData[s_paramCount] = {{
                                                            }};
 
 // Default Constructor
-CrusherModule::CrusherModule() : BaseEffectModule(), m_levelMin(0.01f), m_levelMax(20.0f), 
-    m_rateMin(100.0f), m_rateMax(48000.0f), m_cutoffMin(500), m_cutoffMax(20000), lp_filter_(m_cutoffMax, 48000.0f) {
+CrusherModule::CrusherModule() : BaseEffectModule(), m_rateMin(100.0f), m_rateMax(48000.0f),
+m_cutoffMin(500), m_cutoffMax(20000), lp_filter_(m_cutoffMax, 48000.0f) {
 
     // Set the name of the effect
     m_name = "Crusher";
@@ -72,10 +72,8 @@ void CrusherModule::Init(float sample_rate) {
     m_bitcrusherR.Init(sample_rate);
 }
 
-void CrusherModule::ProcessMono(float in) {
-    BaseEffectModule::ProcessMono(in);
-
-    float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
+void CrusherModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
+    float level = GetParameterAsFloat(LEVEL);
     float cutoff = m_cutoffMin + GetParameterAsFloat(CUTOFF) * (m_cutoffMax - m_cutoffMin);
     float bits = (float)GetParameterAsBinnedValue(BITS);
     float t = GetParameterAsFloat(RATE);     // 0..1
@@ -85,15 +83,15 @@ void CrusherModule::ProcessMono(float in) {
 
     m_bitcrusherL.setNumberOfBits(bits);
     m_bitcrusherL.setTargetSampleRate(rate);
-    float out = m_bitcrusherL.Process(in);
 
-    m_audioRight = m_audioLeft = out * level;
+    for (size_t i = 0; i < size; i++) {
+        out[0][i] = m_bitcrusherL.Process(in[0][i]) * level;
+        out[1][i] = out[0][i];
+    }
 }
 
-void CrusherModule::ProcessStereo(float inL, float inR) {
-    BaseEffectModule::ProcessStereo(inL, inR);
-
-    float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
+void CrusherModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
+    float level = GetParameterAsFloat(LEVEL);
     float cutoff = m_cutoffMin + GetParameterAsFloat(CUTOFF) * (m_cutoffMax - m_cutoffMin);
     float bits = (float)GetParameterAsBinnedValue(BITS);
     float t = GetParameterAsFloat(RATE);     // 0..1
@@ -106,11 +104,13 @@ void CrusherModule::ProcessStereo(float inL, float inR) {
     m_bitcrusherR.setNumberOfBits(bits);
     m_bitcrusherR.setTargetSampleRate(rate);
 
-    float outL = m_bitcrusherL.Process(inL);
-    float outR = m_bitcrusherR.Process(inR);
-
     auto gains = EnergyCrossfade(GetParameterAsFloat(MIX));
 
-    m_audioLeft  = (gains.dry * inL + gains.wet * lp_filter_(outL)) * level;
-    m_audioRight = (gains.dry * inR + gains.wet * lp_filter_(outR)) * level;
+    for (size_t i = 0; i < size; i++) {
+        float outL = m_bitcrusherL.Process(in[0][i]);
+        float outR = m_bitcrusherR.Process(in[1][i]);
+
+        out[0][i] = (gains.dry * in[0][i] + gains.wet * lp_filter_(outL)) * level;
+        out[1][i] = (gains.dry * in[1][i] + gains.wet * lp_filter_(outR)) * level;
+    }
 }

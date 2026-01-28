@@ -225,10 +225,10 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    /*for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < size; i++) {
         crossFadeTarget[0][i] += in[0][i];
         crossFadeTarget[1][i] += in[1][i];
-    }*/
+    }
 
     for (size_t i = 0; i < size; i++) {
         if (g_crossfade.isCrossFading) {
@@ -330,10 +330,15 @@ int main(void) {
     distortion->SetParameterAsBool(DistortionModule::OVERSAMP, 0);
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
-    /*g_effects.chain.push_back(g_effects.micro_looper);
+    crusher->SetParameterAsBinnedValue(CrusherModule::BITS, 32);
+    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 1.0f);
+    crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
+    crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
+
+    g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(distortion);*/
+    g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
 
     for (auto* effect : g_effects.chain) {
@@ -349,7 +354,7 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    /*g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
 
@@ -362,12 +367,14 @@ int main(void) {
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN});*/
-    g_routing.knobs[0].push_back({crusher, CrusherModule::LEVEL});
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 2 * (x - 0.5f); }});
+    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 0.4f + 0.3f; }});
+
+    /*g_routing.knobs[0].push_back({crusher, CrusherModule::LEVEL});
     g_routing.knobs[1].push_back({crusher, CrusherModule::BITS});
     g_routing.knobs[2].push_back({crusher, CrusherModule::RATE});
     g_routing.knobs[3].push_back({crusher, CrusherModule::CUTOFF});
-    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});
+    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});*/
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);

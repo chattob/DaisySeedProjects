@@ -6,7 +6,8 @@
 using namespace bkshepherd;
 
 float DSY_SDRAM_BSS MicroLooperModule::buffer_[kMicroLoopMaxSize];
-float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_[kMicroLoopMaxStretchedSize];
+float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_a_[kMicroLoopMaxStretchedSize];
+float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_b_[kMicroLoopMaxStretchedSize];
 
 // State machine for offline stretching
 enum class StretchState {
@@ -54,8 +55,9 @@ static float DSY_SDRAM_BSS s_frame_time[N];
 static float DSY_SDRAM_BSS s_frame_freq[N];
 static float DSY_SDRAM_BSS s_magnitudes[N/2];
 
-// Normalization buffer for offline OLA
-static float DSY_SDRAM_BSS s_stretch_norm[kMicroLoopMaxStretchedSize];
+// Normalization buffers for offline OLA (double-buffered)
+static float DSY_SDRAM_BSS s_stretch_norm_a[kMicroLoopMaxStretchedSize];
+static float DSY_SDRAM_BSS s_stretch_norm_b[kMicroLoopMaxStretchedSize];
 
 // Window - in SDRAM
 static float DSY_SDRAM_BSS s_win[N];
@@ -226,10 +228,6 @@ void MicroLooperModule::ResetBuffer() {
     mod_                = kMicroLoopMaxSize;
     is_stretching_      = false;
     streaming_stretch_  = false;
-    use_stretched_buffer_ = false;
-    stretched_buffer_normalized_ = false;
-    stretched_length_   = 0;
-    stretched_ready_length_ = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
     stretch_total_frames_ = 0;
@@ -238,7 +236,11 @@ void MicroLooperModule::ResetBuffer() {
     stretch_clear_pending_ = false;
     stretch_clear_pos_ = 0;
 
-    stretch_playing_head_.Reset();
+    // Keep stretched buffer playback state (use_stretched_buffer_, active_stretch_buffer_)
+    // so playback continues during re-recording.
+    // Only reset the write buffer state - it will be set up by StartStretching()
+    write_stretch_buffer_ = false;
+
     playing_head_.Reset();
     recording_head_.Reset();
     prev_wraparound_count_ = 0;
@@ -319,23 +321,44 @@ void MicroLooperModule::StartStretching()
     stretch_frames_done_ = 0;
     stretch_output_frames_done_ = 0;
     stretch_total_frames_ = 0;  // Will be calculated when recording stops
-    stretched_length_ = kMicroLoopMaxStretchedSize;
-    stretched_ready_length_ = 0;
-    stretched_buffer_normalized_ = false;
+
+    // Double-buffering: write to the inactive buffer
+    // If we're currently using stretched buffer, keep it playing
+    write_stretch_buffer_ = !active_stretch_buffer_;
+
+    // Initialize the write buffer's state
+    if (write_stretch_buffer_) {
+        stretched_length_b_ = kMicroLoopMaxStretchedSize;
+        stretched_ready_length_b_ = 0;
+        stretched_buffer_normalized_b_ = false;
+    } else {
+        stretched_length_a_ = kMicroLoopMaxStretchedSize;
+        stretched_ready_length_a_ = 0;
+        stretched_buffer_normalized_a_ = false;
+    }
 
     is_stretching_ = true;
-    use_stretched_buffer_ = false;
+    // Keep use_stretched_buffer_ = true if it was already true (seamless transition)
     s_synth_count = 0;
     s_stretch_state = StretchState::IDLE;
     stretch_clear_pending_ = true;
     stretch_clear_pos_ = 0;
-    stretch_playing_head_.Reset();
+
+    // Only reset playing head if we're not already using stretched buffer
+    if (!use_stretched_buffer_) {
+        stretch_playing_head_.Reset();
+    }
 }
 
 float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
     // During streaming, avoid dividing by partial norm (can blow up at window edges).
     (void)normalized;
-    return MicroLooperModule::stretched_buffer_[idx];
+    // Read from the active buffer
+    if (active_stretch_buffer_) {
+        return MicroLooperModule::stretched_buffer_b_[idx];
+    } else {
+        return MicroLooperModule::stretched_buffer_a_[idx];
+    }
 }
 
 void MicroLooperModule::ProcessStereo(float inL, float inR)
@@ -364,7 +387,17 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
 
         if (use_stretched_buffer_) {
-            size_t stretch_len = is_stretching_ ? stretched_ready_length_ : stretched_length_;
+            // Get length from active buffer
+            size_t stretch_len;
+            bool normalized;
+            if (active_stretch_buffer_) {
+                stretch_len = stretched_ready_length_b_;
+                normalized = stretched_buffer_normalized_b_;
+            } else {
+                stretch_len = stretched_ready_length_a_;
+                normalized = stretched_buffer_normalized_a_;
+            }
+
             if (stretch_len > 0) {
                 stretch_playing_head_.SetSpeed(speed);
 
@@ -376,7 +409,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 }
 
                 m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
-                                                   stretched_buffer_normalized_) * GetParameterAsFloat(FREEZE_MIX);
+                                                   normalized) * GetParameterAsFloat(FREEZE_MIX);
 
                 stretch_playing_head_.UpdatePosition(stretch_len);
             }
@@ -454,17 +487,22 @@ bool MicroLooperModule::Poll() {
     }
 
     if (is_stretching_) {
+        // Get pointers to write buffer and its norm buffer
+        float* write_buffer = write_stretch_buffer_ ? stretched_buffer_b_ : stretched_buffer_a_;
+        float* write_norm = write_stretch_buffer_ ? s_stretch_norm_b : s_stretch_norm_a;
+        size_t write_length = write_stretch_buffer_ ? stretched_length_b_ : stretched_length_a_;
+
         if (stretch_clear_pending_) {
-            size_t remaining = stretched_length_ - stretch_clear_pos_;
+            size_t remaining = write_length - stretch_clear_pos_;
             size_t count = (remaining < kStretchClearChunk) ? remaining : kStretchClearChunk;
             if (count > 0) {
-                std::fill(stretched_buffer_ + stretch_clear_pos_,
-                          stretched_buffer_ + stretch_clear_pos_ + count, 0.0f);
-                std::fill(s_stretch_norm + stretch_clear_pos_,
-                          s_stretch_norm + stretch_clear_pos_ + count, 0.0f);
+                std::fill(write_buffer + stretch_clear_pos_,
+                          write_buffer + stretch_clear_pos_ + count, 0.0f);
+                std::fill(write_norm + stretch_clear_pos_,
+                          write_norm + stretch_clear_pos_ + count, 0.0f);
                 stretch_clear_pos_ += count;
             }
-            if (stretch_clear_pos_ >= stretched_length_) {
+            if (stretch_clear_pos_ >= write_length) {
                 stretch_clear_pending_ = false;
                 s_stretch_state = StretchState::GATHER_FRAME;
             }
@@ -547,15 +585,21 @@ bool MicroLooperModule::Poll() {
                 break;
 
             case StretchState::ADD_TO_OUTPUT:
-                if (stretched_length_ > 0 && (stretch_write_pos_ + N) <= stretched_length_) {
-                    OLA_AddFrame(stretched_buffer_, s_stretch_norm, stretched_length_, stretch_write_pos_,
+                if (write_length > 0 && (stretch_write_pos_ + N) <= write_length) {
+                    OLA_AddFrame(write_buffer, write_norm, write_length, stretch_write_pos_,
                                  s_result_buffer, s_win2);
-                    if (stretch_write_pos_ + H_OUT <= stretched_length_) {
+                    if (stretch_write_pos_ + H_OUT <= write_length) {
                         stretch_write_pos_ += H_OUT;
                     }
                     // Publish ready length every hop for earliest possible playback.
-                    stretched_ready_length_ = stretch_write_pos_;
-                    if (stretched_ready_length_ > 0) {
+                    if (write_stretch_buffer_) {
+                        stretched_ready_length_b_ = stretch_write_pos_;
+                    } else {
+                        stretched_ready_length_a_ = stretch_write_pos_;
+                    }
+                    // Switch to new buffer as soon as first data is ready
+                    if (stretch_write_pos_ > 0) {
+                        active_stretch_buffer_ = write_stretch_buffer_;
                         use_stretched_buffer_ = true;
                     }
                 }
@@ -594,27 +638,35 @@ bool MicroLooperModule::Poll() {
                     // Recording stopped, finalize with actual length
                     stretch_total_frames_ = stretch_frames_done_;
                     size_t total_synth_frames = stretch_total_frames_ * STRETCH;
-                    stretched_length_ = total_synth_frames * H_OUT;
-                    if (stretched_length_ > kMicroLoopMaxStretchedSize) {
-                        stretched_length_ = kMicroLoopMaxStretchedSize;
+                    size_t final_length = total_synth_frames * H_OUT;
+                    if (final_length > kMicroLoopMaxStretchedSize) {
+                        final_length = kMicroLoopMaxStretchedSize;
                     }
-                    stretched_ready_length_ = stretched_length_;
-                    use_stretched_buffer_ = (stretched_length_ > 0);
-                    if (stretched_length_ > 0) {
+
+                    // Update the write buffer's length
+                    if (write_stretch_buffer_) {
+                        stretched_length_b_ = final_length;
+                        stretched_ready_length_b_ = final_length;
+                    } else {
+                        stretched_length_a_ = final_length;
+                        stretched_ready_length_a_ = final_length;
+                    }
+
+                    if (final_length > 0) {
                         // Fold the OLA tail back to the start for a circular loop.
                         size_t fold_len = N - H_OUT;
-                        if (fold_len > stretched_length_) {
-                            fold_len = stretched_length_;
+                        if (fold_len > final_length) {
+                            fold_len = final_length;
                         }
-                        if (stretched_length_ + fold_len > kMicroLoopMaxStretchedSize) {
-                            fold_len = kMicroLoopMaxStretchedSize - stretched_length_;
+                        if (final_length + fold_len > kMicroLoopMaxStretchedSize) {
+                            fold_len = kMicroLoopMaxStretchedSize - final_length;
                         }
                         for (size_t i = 0; i < fold_len; ++i) {
-                            size_t tail_idx = stretched_length_ + i;
-                            stretched_buffer_[i] += stretched_buffer_[tail_idx];
-                            s_stretch_norm[i] += s_stretch_norm[tail_idx];
-                            stretched_buffer_[tail_idx] = 0.0f;
-                            s_stretch_norm[tail_idx] = 0.0f;
+                            size_t tail_idx = final_length + i;
+                            write_buffer[i] += write_buffer[tail_idx];
+                            write_norm[i] += write_norm[tail_idx];
+                            write_buffer[tail_idx] = 0.0f;
+                            write_norm[tail_idx] = 0.0f;
                         }
                     }
                     s_stretch_state = StretchState::DONE;
@@ -623,20 +675,28 @@ bool MicroLooperModule::Poll() {
                 break;
             }
 
-            case StretchState::DONE:
-                if (stretched_length_ > 0) {
-                    for (size_t i = 0; i < stretched_length_; ++i) {
-                        float norm = s_stretch_norm[i];
-                        stretched_buffer_[i] = (fabsf(norm) > eps) ? (stretched_buffer_[i] / norm) : 0.0f;
+            case StretchState::DONE:{
+                // Normalize the write buffer (which is now the active buffer)
+                size_t final_length = write_stretch_buffer_ ? stretched_length_b_ : stretched_length_a_;
+                if (final_length > 0) {
+                    for (size_t i = 0; i < final_length; ++i) {
+                        float norm = write_norm[i];
+                        write_buffer[i] = (fabsf(norm) > eps) ? (write_buffer[i] / norm) : 0.0f;
                     }
+                }
+
+                // Mark write buffer as normalized
+                if (write_stretch_buffer_) {
+                    stretched_buffer_normalized_b_ = true;
+                } else {
+                    stretched_buffer_normalized_a_ = true;
                 }
 
                 is_stretching_ = false;
                 streaming_stretch_ = false;
-                stretched_buffer_normalized_ = true;
-                stretched_ready_length_ = stretched_length_;
                 s_stretch_state = StretchState::IDLE;
                 break;
+            }
         }
     }
     return true;

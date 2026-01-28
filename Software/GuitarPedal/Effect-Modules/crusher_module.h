@@ -84,15 +84,13 @@ class CrusherModule : public BaseEffectModule {
     };
 
     void Init(float sample_rate) override;
-    void ProcessMono(float in) override;
-    void ProcessStereo(float inL, float inR) override;
+    void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
+    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
 
   private:
     Bitcrusher m_bitcrusherL;
     Bitcrusher m_bitcrusherR;
 
-    float m_levelMin;
-    float m_levelMax;
     float m_rateMin;
     float m_rateMax;
     float m_cutoffMin;
