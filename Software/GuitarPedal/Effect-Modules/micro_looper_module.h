@@ -2,6 +2,7 @@
 
 #include "base_effect_module.h"
 #include "../Util/playing_head.h"
+#include "../Util/tape_modulator.h"
 
 namespace bkshepherd
 {
@@ -9,14 +10,14 @@ namespace bkshepherd
 // ============================================================
 // FFT CONFIGURATION
 // ============================================================
-static constexpr size_t N = 4096;          // FFT size
+static constexpr size_t N = 16384;          // FFT size
 static constexpr size_t H_IN = N / 8;      // Input hop (analysis)
-static constexpr size_t STRETCH = 10;       // Stretch factor
+static constexpr size_t STRETCH = 20;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 4096;
 
-static constexpr size_t kMicroLoopMaxSize = N * 4;
+static constexpr size_t kMicroLoopMaxSize = 16384;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -28,10 +29,9 @@ class MicroLooperModule : public BaseEffectModule
 
     enum Param {
       LOOP_MODE,
-      SPEED,
+      SLICE,
       IN_MIX,
-      FREEZE_MIX,
-      LOOP_MIX,
+      BALANCE,
       SENSITIVITY,
       PARAM_COUNT
     };
@@ -71,6 +71,8 @@ class MicroLooperModule : public BaseEffectModule
     PlayingHead playing_head_;
     PlayingHead recording_head_;
     size_t prev_wraparound_count_ = 0;
+
+    TapeModulator speed_error_generator_;
 
     void WriteBuffer(float in);
     void StartStretching();

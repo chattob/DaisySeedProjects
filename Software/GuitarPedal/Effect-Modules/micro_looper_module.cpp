@@ -2,6 +2,7 @@
 #include "../Util/shy_fft.h"
 #include <cmath>
 #include <cstring>
+#include "../Util/audio_utilities.h"
 
 using namespace bkshepherd;
 
@@ -92,11 +93,12 @@ static inline void GatherFrameFromBuffer(float* dst, const float* buffer, size_t
 }
 
 static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
-                                 size_t start, const float* x, const float* w2) {
+                                 size_t start, const float* x, const float* w2, bool reverse = false) {
     for(size_t i = 0; i < N; ++i) {
         size_t p = (start + i) % out_size;
-        out[p] += x[i];
-        norm[p] += w2[i];
+        size_t src_i = reverse ? (N - 1 - i) : i;
+        out[p] += x[src_i];
+        norm[p] += w2[src_i];
     }
 }
 
@@ -105,7 +107,7 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
 // ============================================================
 static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
 
-static const int s_paramCount = 6;
+static const int s_paramCount = 5;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Loop mode",
@@ -117,7 +119,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         midiCCMapping : -1
     },
     {
-        name : "Speed",
+        name : "Slice",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
@@ -133,19 +135,11 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         midiCCMapping : -1
     },
     {
-        name : "Freeze mix",
+        name : "Balance",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 1.0f},
+        defaultValue : {.float_value = 0.5f},
         knobMapping : 1,
-        midiCCMapping : -1
-    },
-    {
-        name : "Loop mix",
-        valueType : ParameterValueType::Float,
-        valueBinCount : 0,
-        defaultValue : {.float_value = 0.0f},
-        knobMapping : 2,
         midiCCMapping : -1
     },
     {
@@ -175,6 +169,8 @@ void MicroLooperModule::Init(float sample_rate)
     BaseEffectModule::Init(sample_rate);
 
     ResetBuffer();
+
+    speed_error_generator_.Init(sample_rate);
 
     // Initialize FFT
     s_fft.Init();
@@ -362,6 +358,10 @@ float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
     m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
+    float slice = GetParameterAsFloat(SLICE);
+    auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
+    float loop_mix = gains.dry;
+    float freeze_mix = gains.wet;
 
     // Envelope follower + auto-start logic (runs every sample)
     float x = 0.5f * (fabsf(inL) + fabsf(inR));
@@ -377,7 +377,8 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     }
 
     if (is_playing_ && mod_ > 0) {
-        float speed = GetParameterAsFloat(SPEED);
+        float speed_error = 1.0f;//speed_error_generator_.GetTapeSpeed(2.0f, 0.0f, 1.0f, 0.0f);
+        float speed = 1.0f * speed_error;
         playing_head_.SetSpeed(speed);
 
         // Read position BEFORE updating
@@ -405,7 +406,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 }
 
                 m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
-                                                   normalized) * GetParameterAsFloat(FREEZE_MIX);
+                                                   normalized) * freeze_mix;
 
                 uint16_t stretch_wraparound_count = stretch_playing_head_.GetWrapAroundCount();                                  
                 stretch_playing_head_.UpdatePosition(stretch_len);
@@ -416,10 +417,10 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 }
             }
         }
-        m_audioLeft += buffer_[playing_head_position] * GetParameterAsFloat(LOOP_MIX);
+        m_audioLeft += buffer_[playing_head_position] * loop_mix;
 
         // Update positions AFTER reading
-        playing_head_.UpdatePosition(mod_);
+        playing_head_.UpdatePosition(mod_, slice);
 
         if (is_recording_) {
             recording_head_.UpdatePosition(mod_);
@@ -433,6 +434,12 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             /*if ((loop_length_ >= N) && !is_stretching_) {
                 StartStretching();
             }*/
+        } else {
+            size_t wraparound_count = playing_head_.GetWrapAroundCount();
+            if (wraparound_count > prev_wraparound_count_) {
+
+            }
+            prev_wraparound_count_ = wraparound_count;
         }
     }
 
@@ -588,8 +595,9 @@ bool MicroLooperModule::Poll() {
 
             case StretchState::ADD_TO_OUTPUT:
                 if (write_length > 0 && (stretch_write_pos_ + N) <= write_length) {
+                    bool reverse_previous_frame = (s_synth_count % 2 == 1);
                     OLA_AddFrame(write_buffer, write_norm, write_length, stretch_write_pos_,
-                                 s_result_buffer, s_win2);
+                                 s_result_buffer, s_win2, reverse_previous_frame);
                     if (stretch_write_pos_ + H_OUT <= write_length) {
                         stretch_write_pos_ += H_OUT;
                     }
@@ -602,7 +610,7 @@ bool MicroLooperModule::Poll() {
             case StretchState::CHECK_MORE_SYNTH:
                 if(s_synth_count < STRETCH) {
                     // First input frame  stretched - switch to new buffer
-                    if (s_synth_count >= 1) {
+                    if (s_synth_count >= 6) {
                         if (write_stretch_buffer_) {
                             stretched_ready_length_b_ = stretch_write_pos_;
                         } else {
@@ -613,7 +621,11 @@ bool MicroLooperModule::Poll() {
                             use_stretched_buffer_ = true;
                         }
                     }
-                    s_stretch_state = StretchState::RANDOMIZE_PHASES;
+                    if (s_synth_count % 2 == 0) {
+                        s_stretch_state = StretchState::RANDOMIZE_PHASES;
+                    } else {
+                        s_stretch_state = StretchState::ADD_TO_OUTPUT; // We will simply add the previous frame reverted.
+                    }
                 } else {
                     s_synth_count = 0;
                     s_stretch_state = StretchState::ADVANCE_READ;

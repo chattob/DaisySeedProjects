@@ -135,6 +135,24 @@ class DelayModule : public BaseEffectModule {
         PARAM_COUNT
     };
 
+    enum Wave {
+        WAVE_SINE = 1,
+        WAVE_TRIANGLE,
+        WAVE_SAW,
+        WAVE_RAMP,
+        WAVE_SQUARE,
+        WAVE_PERLIN,
+        WAVE_COUNT
+    };
+
+    enum ModParam {
+        MOD_NONE = 1,
+        MOD_DELAY_TIME,
+        MOD_DELAY_LEVEL, 
+        MOD_DELAY_PAN,
+        MOD_COUNT
+    };
+
     void Init(float sample_rate) override;
     void UpdateLEDRate();
     void ParameterChanged(int parameter_id) override;

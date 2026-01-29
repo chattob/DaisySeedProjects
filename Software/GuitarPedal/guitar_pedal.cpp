@@ -207,8 +207,8 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    float crossFadeTargetBuffer[2][kBlockSize];   // actual audio data
-    float* crossFadeTarget[2] = { crossFadeTargetBuffer[0], crossFadeTargetBuffer[1] }; // pointers
+    static float crossFadeTargetBuffer[2][kBlockSize];   // actual audio data
+    static float* crossFadeTarget[2] = { crossFadeTargetBuffer[0], crossFadeTargetBuffer[1] }; // pointers
 
     for (size_t i = 0; i < size; i++) {
         crossFadeTarget[0][i] = in[0][i];
@@ -227,8 +227,8 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    float mixedInputBuffer[2][kBlockSize];   // actual audio data
-    float* mixedInput[2] = { mixedInputBuffer[0], mixedInputBuffer[1] }; // pointers
+    static float mixedInputBuffer[2][kBlockSize];   // actual audio data
+    static float* mixedInput[2] = { mixedInputBuffer[0], mixedInputBuffer[1] }; // pointers
 
     g_effects.mixer->ProcessStereoBlock(in, mixedInput, size);
 
@@ -327,14 +327,13 @@ int main(void) {
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
     g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
-    g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::FREEZE_MIX, 1.0f);
 
     delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
     delay->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, 2);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, 6);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, DelayModule::MOD_DELAY_TIME);
+    delay->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, DelayModule::WAVE_PERLIN);
     delay->SetParameterAsBinnedValue(DelayModule::MOD_FREQ, 0.65f);
 
     distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
@@ -370,9 +369,9 @@ int main(void) {
     //g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
     g_routing.knobs[0].push_back({g_effects.mixer, FilterModule::LEVEL});
 
-    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::LOOP_MIX});
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::BALANCE});
 
-    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
+    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 0.04f + 0.96f * x; }});
 
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
@@ -383,12 +382,6 @@ int main(void) {
 
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 2 * (x - 0.5f); }});
     g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 1.2f + 0.4f; }});
-
-    /*g_routing.knobs[0].push_back({crusher, CrusherModule::LEVEL});
-    g_routing.knobs[1].push_back({crusher, CrusherModule::BITS});
-    g_routing.knobs[2].push_back({crusher, CrusherModule::RATE});
-    g_routing.knobs[3].push_back({crusher, CrusherModule::CUTOFF});
-    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});*/
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
@@ -456,7 +449,7 @@ int main(void) {
 
             g_hardware.seed.PrintLine("CPU avg: %d%%  min: %d%%  max: %d%%", avg, minv, maxv);
             g_hardware.seed.PrintLine("sizeof MicroLooperModule: %d", sizeof(MicroLooperModule));
-
+            // To read in terminal: screen /dev/tty.usbmodem395C326C34321 115200
             //g_hardware.seed.PrintLine("tick %d%%  odd: %d%%", g_midi.clock.tickCount, g_midi.beatLightOn);
         }
 
