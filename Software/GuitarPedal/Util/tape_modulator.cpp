@@ -1,5 +1,4 @@
 #include "tape_modulator.h"
-#include "../constants.h"
 
 // Actual definitions of the static members
 uint8_t TapeModulator::perm_[512];

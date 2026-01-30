@@ -15,7 +15,7 @@ static constexpr size_t H_IN = N / 8;      // Input hop (analysis)
 static constexpr size_t STRETCH = 20;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
-static constexpr size_t kStretchClearChunk = 4096;
+static constexpr size_t kStretchClearChunk = 8192;
 
 static constexpr size_t kMicroLoopMaxSize = 16384;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
@@ -45,6 +45,9 @@ class MicroLooperModule : public BaseEffectModule
     void ProcessStereo(float inL, float inR) override;
     bool Poll() override;
     void BypassFootswitchPressed() override;
+    void AlternateFootswitchPressed() override;
+    void FootswitchPressed(size_t footswitch_id) override;
+    void FootswitchReleased(size_t footswitch_id) override;
     float GetBrightnessForLED(int led_id) const override;
 
   private:
@@ -65,8 +68,13 @@ class MicroLooperModule : public BaseEffectModule
     bool first_layer_ = true;
     size_t loop_length_ = 0;
     size_t mod_ = kMicroLoopMaxSize;
-    size_t write_pos_ = 0;
-    size_t read_pos_ = 0;
+
+    bool freeze_playing_ = false;
+    bool loop_playing_ = false;
+
+    bool speed_error_ = false;
+    float smoothed_speed_ = 1.0f;
+    float target_speed_ = 1.0f;
 
     PlayingHead playing_head_;
     PlayingHead recording_head_;
@@ -124,7 +132,7 @@ class MicroLooperModule : public BaseEffectModule
     // Linear interpolation: thr = threshold_on_ + (threshold_on_min_ - threshold_on_) * sensitivity
     // At sensitivity=0.5: (0.055 + 0.005) / 2 = 0.03
     float threshold_on_ = 0.1f;     // threshold at sensitivity=0 (hard to trigger)
-    float threshold_on_min_ = 0.001f; // threshold at sensitivity=1 (easy to trigger)
+    float threshold_on_min_ = 0.01f; // threshold at sensitivity=1 (easy to trigger)
     float attack_ms_ = 8.0f;          // envelope attack time
     float release_ms_ = 200.0f;       // envelope release time
     float start_hold_ms_ = 10.0f;     // must stay above threshold_on_ this long

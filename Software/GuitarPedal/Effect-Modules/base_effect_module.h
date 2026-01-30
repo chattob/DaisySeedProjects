@@ -331,6 +331,8 @@ class BaseEffectModule {
     virtual void FootswitchPressed(size_t footswitch_id){};
     /** Overridable callback when footswitch with specified ID is released */
     virtual void FootswitchReleased(size_t footswitch_id){};
+    /** Overridable callback when footswitch with specified ID is held for 1 second */
+    virtual void FootswitchHeldFor1Second(size_t footswitch_id){};
 
     void SetCPUUsage(float cpuUsage) { m_cpuUsage = cpuUsage; };
     float GetCPUUsage() const { return m_cpuUsage; }

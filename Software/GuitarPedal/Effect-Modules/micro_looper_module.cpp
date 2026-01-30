@@ -146,7 +146,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         name : "Sensitivity",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
-        defaultValue : {.float_value = 0.5f},
+        defaultValue : {.float_value = 1.0f},
         knobMapping : 3,
         midiCCMapping : -1
     },
@@ -207,13 +207,34 @@ void MicroLooperModule::Init(float sample_rate)
 }
 
 void MicroLooperModule::BypassFootswitchPressed() {
-    if (!is_recording_) {
+    /*if (!is_recording_) {
         clock_beat_ = false;
         armed_recording_ = true;
     } else {
         clock_beat_ = false;
         armed_stop_ = true;
+    }*/
+   freeze_playing_ = !freeze_playing_;
+}
+
+void MicroLooperModule::FootswitchPressed(size_t footswitch_id) {
+    switch (footswitch_id) {
+        case 2:
+            speed_error_ = true;
+            break;
     }
+}
+
+void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
+    switch (footswitch_id) {
+        case 2:
+            speed_error_ = false;
+            break;
+    }
+}
+
+void MicroLooperModule::AlternateFootswitchPressed() {
+   loop_playing_ = !loop_playing_;
 }
 
 void MicroLooperModule::ResetBuffer() {
@@ -360,8 +381,8 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
     float slice = GetParameterAsFloat(SLICE);
     auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
-    float loop_mix = gains.dry;
-    float freeze_mix = gains.wet;
+    float loop_mix = loop_playing_ ? gains.dry : 0.0f;
+    float freeze_mix = freeze_playing_ ? gains.wet : 0.0f;
 
     // Envelope follower + auto-start logic (runs every sample)
     float x = 0.5f * (fabsf(inL) + fabsf(inR));
@@ -377,10 +398,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     }
 
     if (is_playing_ && mod_ > 0) {
-        float speed_error = 1.0f;//speed_error_generator_.GetTapeSpeed(2.0f, 0.0f, 1.0f, 0.0f);
-        float speed = 1.0f * speed_error;
-        playing_head_.SetSpeed(speed);
-
         // Read position BEFORE updating
         float playing_head_position_f = playing_head_.GetHeadPosition();
         size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
@@ -411,7 +428,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 uint16_t stretch_wraparound_count = stretch_playing_head_.GetWrapAroundCount();                                  
                 stretch_playing_head_.UpdatePosition(stretch_len);
                 if (stretch_wraparound_count != stretch_playing_head_.GetWrapAroundCount()) {
-                    stretch_speed_ = stretch_speed_ > 0.0f ? -1.0f : 1.0f;
+                    stretch_speed_ = -stretch_speed_;
                     stretch_playing_head_.SetSpeed(stretch_speed_);
                     stretch_playing_head_.UpdatePosition(stretch_len);
                 }
@@ -420,11 +437,39 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         m_audioLeft += buffer_[playing_head_position] * loop_mix;
 
         // Update positions AFTER reading
+        size_t wraparound_count = playing_head_.GetWrapAroundCount();
         playing_head_.UpdatePosition(mod_, slice);
+        float speed;
+
+        float speed_error = speed_error_generator_.GetTapeSpeed(2.0f, 0.0f, 10.0f, 0.0f);
+        if (wraparound_count != playing_head_.GetWrapAroundCount()) {
+            if (speed_error_) {
+                if (fabs(speed_error) > 3.2f) {
+                    target_speed_ = speed_error < 0.0f ? -0.5f : 0.5f;
+                } else if (fabs(speed_error) > 1.7f) {
+                    target_speed_ = speed_error < 0.0f ? -2.0f : 2.0f;
+                } else if (speed_error < -1.0f) {
+                    target_speed_ = -1.0f;
+                } else {
+                    target_speed_ = 1.0f;
+                }
+            }
+        }
+
+        if (speed_error_) {
+            // Low-pass filter for smooth speed transitions
+            smoothed_speed_ += 0.2f * (target_speed_ - smoothed_speed_);
+            speed = smoothed_speed_;
+        } else {
+            smoothed_speed_ = 1.0f;
+            speed = 1.0f;
+        }  
+        playing_head_.SetSpeed(speed);
+        stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
 
         if (is_recording_) {
             recording_head_.UpdatePosition(mod_);
-            size_t wraparound_count = recording_head_.GetWrapAroundCount();
+            wraparound_count = recording_head_.GetWrapAroundCount();
             int mode = GetParameterAsBinnedValue(LOOP_MODE);
             if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
                 armed_stop_ = true;
@@ -721,17 +766,9 @@ bool MicroLooperModule::Poll() {
 
 float MicroLooperModule::GetBrightnessForLED(int led_id) const
 {
-    if (led_id == 0)
-    {
-        // LED 0: recording indicator with fade in last 20% of loop
-        if (is_recording_)
-        {
-            return 1.0f;
-        }
-        else
-        {
-            // Not recording: base off (pattern may override later)
-            return 0.0f;
-        }
+    if (led_id == 0) {
+        return freeze_playing_ ? 1.0f : 0.0f;
+    } else {
+        return loop_playing_ ? 1.0f : 0.0f;
     }
 }

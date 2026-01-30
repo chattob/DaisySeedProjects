@@ -117,22 +117,14 @@ struct KnobRoute {
 };
 
 enum class SwitchAction {
-    AltPressed,
-    AltReleased,
-    AltHeld1s,
-
-    BypassPressed,
-    BypassReleased,
-    BypassHeld1s,
-
-    Id2Pressed,
-    Id2Released,
-
-    PrePostModeSelect
+    Pressed,
+    Released,
+    Held1s
 };
 
 struct SwitchRoute {
     BaseEffectModule* effect;
+    int switchId;
     SwitchAction action;
 };
 
@@ -387,8 +379,10 @@ int main(void) {
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
 
     // Alternate footswitch: toggle delay pressed & looper held
-    g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, SwitchAction::BypassPressed});
-    g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, SwitchAction::AltPressed});
+    g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
+    g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Pressed});
+    g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Released});
 
     // Setup Relay Bypass State
     if (g_hardware.SupportsTrueBypass()) {
@@ -528,73 +522,44 @@ int main(void) {
             for (const auto &r : g_routing.switches[sw]) {
                 switch (r.action) {
                     // SHORT PRESS -> fire on RisingEdge
-                    case SwitchAction::AltPressed:
+                    case SwitchAction::Pressed:
                         if (switchPressed) {
-                            r.effect->AlternateFootswitchPressed();
-                        }
-                        break;
-
-                    case SwitchAction::BypassPressed:
-                        if (switchPressed) {
-                            r.effect->BypassFootswitchPressed();
-                        }
-                        break;
-
-                    case SwitchAction::Id2Pressed:
-                        if (switchPressed) {
-                            r.effect->FootswitchPressed(2);
+                            if (r.switchId == altSwitchID) {
+                                r.effect->AlternateFootswitchPressed();
+                            } else if (r.switchId == bypassSwitchID) {
+                                r.effect->BypassFootswitchPressed();
+                            } else {
+                                r.effect->FootswitchPressed(r.switchId);
+                            }
                         }
                         break;
 
                     // RELEASE -> fire on FallingEdge (also clear held-guard)
-                    case SwitchAction::AltReleased:
+                    case SwitchAction::Released:
                         if (switchReleased) {
-                            r.effect->AlternateFootswitchReleased();
-
-                            // Reset held flag so future holds can fire
-                            g_switches.heldFired[sw] = false;
-                        }
-                        break;
-
-                    case SwitchAction::BypassReleased:
-                        if (switchReleased) {
-                            r.effect->BypassFootswitchReleased();
-
-                            // Reset held flag so future holds can fire
-                            g_switches.heldFired[sw] = false;
-                        }
-                        break;
-
-                    case SwitchAction::Id2Released:
-                        if (switchReleased) {
-                            r.effect->FootswitchReleased(2);
-
+                            if (r.switchId == altSwitchID) {
+                                r.effect->AlternateFootswitchReleased();
+                            } else if (r.switchId == bypassSwitchID) {
+                                r.effect->BypassFootswitchReleased();
+                            } else {
+                                r.effect->FootswitchReleased(r.switchId);
+                            }
                             // Reset held flag so future holds can fire
                             g_switches.heldFired[sw] = false;
                         }
                         break;
 
                     // HELD (1s) -> fire once when hold threshold reached, guarded by switchesHeldFired
-                    case SwitchAction::AltHeld1s:
+                    case SwitchAction::Held1s:
                         if (switchHeld && !g_switches.heldFired[sw]) {
-                            r.effect->AlternateFootswitchHeldFor1Second();
+                            if (r.switchId == altSwitchID) {
+                                r.effect->AlternateFootswitchHeldFor1Second();
+                            } else if (r.switchId == bypassSwitchID) {
+                                r.effect->BypassFootswitchHeldFor1Second();
+                            } else {
+                                r.effect->FootswitchHeldFor1Second(r.switchId);
+                            }
                             g_switches.heldFired[sw] = true; // prevent repeated calls until release
-                        }
-                        break;
-
-                    case SwitchAction::BypassHeld1s:
-                        if (switchHeld && !g_switches.heldFired[sw]) {
-                            r.effect->BypassFootswitchHeldFor1Second();
-                            g_switches.heldFired[sw] = true; // prevent repeated calls until release
-                        }
-                        break;
-
-                    case SwitchAction::PrePostModeSelect:
-                        if (switchPressed) {
-                            g_effects.preFXmode = true;
-                        }
-                        if (switchReleased) {
-                            g_effects.preFXmode = false;
                         }
                         break;
                 }
