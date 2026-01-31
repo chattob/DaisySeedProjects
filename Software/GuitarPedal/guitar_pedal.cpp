@@ -219,7 +219,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         }
     }
 
-    static float mixedInputBuffer[2][kBlockSize];   // actual audio data
+    /*static float mixedInputBuffer[2][kBlockSize];   // actual audio data
     static float* mixedInput[2] = { mixedInputBuffer[0], mixedInputBuffer[1] }; // pointers
 
     g_effects.mixer->ProcessStereoBlock(in, mixedInput, size);
@@ -227,7 +227,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     for (size_t i = 0; i < size; i++) {    
         crossFadeTarget[0][i] += mixedInput[0][i];
         crossFadeTarget[1][i] += mixedInput[1][i];
-    }
+    }*/
 
     for (size_t i = 0; i < size; i++) {
         if (g_crossfade.isCrossFading) {
@@ -313,12 +313,13 @@ int main(void) {
     auto crusher            = new CrusherModule();
 
     g_effects.mixer = new FilterModule();
+    g_effects.mixer->Init(sample_rate);
     g_effects.mixer->SetParameterAsBool(FilterModule::HP_MODE, false);
     g_effects.mixer->SetParameterAsFloat(FilterModule::CUTOFF, 8000.0f);
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
-    g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
+    g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 1.0f);
 
     delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
     delay->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);

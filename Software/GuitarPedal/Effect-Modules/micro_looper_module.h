@@ -75,12 +75,13 @@ class MicroLooperModule : public BaseEffectModule
     bool speed_error_ = false;
     float smoothed_speed_ = 1.0f;
     float target_speed_ = 1.0f;
+    uint32_t samples_since_speed_change_ = 0;
 
     PlayingHead playing_head_;
     PlayingHead recording_head_;
     size_t prev_wraparound_count_ = 0;
 
-    TapeModulator speed_error_generator_;
+    float GetNextMarkovSpeed();
 
     void WriteBuffer(float in);
     void StartStretching();

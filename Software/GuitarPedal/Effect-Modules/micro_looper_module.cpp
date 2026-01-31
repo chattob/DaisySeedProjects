@@ -170,8 +170,6 @@ void MicroLooperModule::Init(float sample_rate)
 
     ResetBuffer();
 
-    speed_error_generator_.Init(sample_rate);
-
     // Initialize FFT
     s_fft.Init();
 
@@ -260,6 +258,7 @@ void MicroLooperModule::ResetBuffer() {
     playing_head_.Reset();
     recording_head_.Reset();
     prev_wraparound_count_ = 0;
+    samples_since_speed_change_ = 0;
 
     s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
@@ -376,6 +375,44 @@ float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
     }
 }
 
+float MicroLooperModule::GetNextMarkovSpeed() {
+    float current = target_speed_;
+    // Random value in [0, 1)
+    float r = (s_rng.nextU32() >> 8) * (1.0f / 16777216.0f);
+
+    // Chaos factor: 0 = always stay at 1.0, 1 = 50% chance to leave 1.0
+    // TODO: tie this to a knob
+    float chaos = 1.0f;
+    float stay_prob = 1.0f - chaos * 0.5f;  // Range: 1.0 (chaos=0) to 0.5 (chaos=1)
+
+    if (current == 1.0f) {
+        if (r < stay_prob) return 1.0f;
+        // Distribute remaining probability
+        // Weights: 2.0=25%, -2.0=25%, -1.0=25%, 0.5=12.5%, -0.5=12.5%
+        float leave_r = (r - stay_prob) / (1.0f - stay_prob);  // Normalize to [0,1)
+        if (leave_r < 0.25f) return 2.0f;
+        else if (leave_r < 0.5f) return -2.0f;
+        else if (leave_r < 0.75f) return -1.0f;
+        else if (leave_r < 0.875f) return 0.5f;
+        else return -0.5f;
+    } else if (current == -1.0f) {
+        // 1.0 has highest chance (50%), rest split equally
+        if (r < 0.5f) return 1.0f;
+        else if (r < 0.625f) return 0.5f;
+        else if (r < 0.75f) return -0.5f;
+        else if (r < 0.875f) return 2.0f;
+        else return -2.0f;
+    } else if (current == 0.5f || current == -0.5f) {
+        // Bias toward 1.0
+        if (r < 0.7f) return 1.0f;
+        else return -1.0f;
+    } else {
+        // From 2.0 or -2.0: bias toward 1.0
+        if (r < 0.7f) return 1.0f;
+        else return -1.0f;
+    }
+}
+
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
     m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
@@ -441,24 +478,17 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         playing_head_.UpdatePosition(mod_, slice);
         float speed;
 
-        float speed_error = speed_error_generator_.GetTapeSpeed(2.0f, 0.0f, 10.0f, 0.0f);
         if (wraparound_count != playing_head_.GetWrapAroundCount()) {
-            if (speed_error_) {
-                if (fabs(speed_error) > 3.2f) {
-                    target_speed_ = speed_error < 0.0f ? -0.5f : 0.5f;
-                } else if (fabs(speed_error) > 1.7f) {
-                    target_speed_ = speed_error < 0.0f ? -2.0f : 2.0f;
-                } else if (speed_error < -1.0f) {
-                    target_speed_ = -1.0f;
-                } else {
-                    target_speed_ = 1.0f;
-                }
+            if (speed_error_ && samples_since_speed_change_ >= mod_ / 4) {
+                target_speed_ = GetNextMarkovSpeed();
+                samples_since_speed_change_ = 0;
             }
         }
+        samples_since_speed_change_++;
 
         if (speed_error_) {
             // Low-pass filter for smooth speed transitions
-            smoothed_speed_ += 0.2f * (target_speed_ - smoothed_speed_);
+            smoothed_speed_ += 0.002f * (target_speed_ - smoothed_speed_);
             speed = smoothed_speed_;
         } else {
             smoothed_speed_ = 1.0f;
