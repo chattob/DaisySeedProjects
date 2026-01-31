@@ -362,9 +362,9 @@ int main(void) {
     //g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
     g_routing.knobs[0].push_back({g_effects.mixer, FilterModule::LEVEL});
 
-    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::BALANCE});
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
 
-    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 0.04f + 0.96f * x; }});
+    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::BALANCE});//, [](float x) { return 0.04f + 0.96f * x; }});
 
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
@@ -384,6 +384,8 @@ int main(void) {
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
     g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Pressed});
     g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Released});
+    g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
+    g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});
 
     // Setup Relay Bypass State
     if (g_hardware.SupportsTrueBypass()) {

@@ -17,7 +17,7 @@ static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 8192;
 
-static constexpr size_t kMicroLoopMaxSize = 16384;
+static constexpr size_t kMicroLoopMaxSize = 16384 * 3;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -30,6 +30,7 @@ class MicroLooperModule : public BaseEffectModule
     enum Param {
       LOOP_MODE,
       SLICE,
+      FADING,
       IN_MIX,
       BALANCE,
       SENSITIVITY,
@@ -37,7 +38,7 @@ class MicroLooperModule : public BaseEffectModule
     };
 
     enum LoopMode {
-      OVERDUB,
+      OVERDUB = 1,
       SAMPLER
     };
 
@@ -49,6 +50,7 @@ class MicroLooperModule : public BaseEffectModule
     void FootswitchPressed(size_t footswitch_id) override;
     void FootswitchReleased(size_t footswitch_id) override;
     float GetBrightnessForLED(int led_id) const override;
+    void ParameterChanged(int parameter_id) override;
 
   private:
     void ResetBuffer();

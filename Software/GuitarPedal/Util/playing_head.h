@@ -9,6 +9,7 @@ class PlayingHead {
         void Reset();
         inline void SetSpeed(float speed) {speed_ = speed;};
         void UpdatePosition(size_t loop_length, float slice = 1.0f, float start_pos = 0.0f);
+        bool UpdatePositionPingPong(size_t loop_length);
         inline float GetHeadPosition() const {return head_position_f_;};
         inline uint16_t GetWrapAroundCount() const {return wrap_around_count_;};
         bool SyncTo(const PlayingHead& target);
@@ -17,4 +18,5 @@ class PlayingHead {
         float head_position_f_ = 0.0f;
         float speed_ = 1.0f;
         uint16_t wrap_around_count_ = 0;
+        float pingpong_dir_ = 1.0f;
 };

@@ -3,6 +3,7 @@
 void PlayingHead::Reset() {
     head_position_f_ = 0.0f;
     wrap_around_count_ = 0;
+    pingpong_dir_ = 1.0f;
 }
 
 static inline float wrapf(float x, float L)
@@ -77,6 +78,41 @@ void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_po
     }
 
     // (speed == 0) → head_position_f_ stays still
+}
+
+bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
+    if (loop_length < 2) {
+        head_position_f_ = 0.0f;
+        return false;
+    }
+    float step = std::fabs(speed_);
+    if (step == 0.0f) {
+        return false;
+    }
+
+    float max_pos = static_cast<float>(loop_length - 1);
+    float next = head_position_f_ + (step * pingpong_dir_);
+
+    if (pingpong_dir_ > 0.0f) {
+        if (next > max_pos) {
+            float overshoot = next - max_pos;
+            head_position_f_ = max_pos - overshoot;
+            pingpong_dir_ = -pingpong_dir_;
+            wrap_around_count_++;
+            return true;
+        }
+    } else {
+        if (next < 0.0f) {
+            float overshoot = -next;
+            head_position_f_ = overshoot;
+            pingpong_dir_ = -pingpong_dir_;
+            wrap_around_count_++;
+            return true;
+        }
+    }
+
+    head_position_f_ = next;
+    return false;
 }
 
 bool PlayingHead::SyncTo(const PlayingHead& target) {
