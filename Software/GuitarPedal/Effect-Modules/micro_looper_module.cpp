@@ -28,7 +28,9 @@ enum class StretchState {
 
 constexpr float eps = 1e-12f;
 constexpr float kStretchFullOverlapRatio = 0.98f;
-constexpr uint32_t kStretchDeclickSamples = 32;
+constexpr size_t kStretchDeclickSamples = 32;
+constexpr size_t kStretchFadeInSamples = 24000;
+constexpr size_t kStretchMinPlayLength = H_OUT * 2;
 
 // RNG for phase randomization
 struct XorShift32 {
@@ -159,12 +161,36 @@ static inline void ComputeFullOverlapRange(const float* norm, size_t length,
     play_length = len;
 }
 
+static inline void UpdateStreamingPlayRange(const float* norm, size_t length,
+                                            size_t& play_start, size_t& play_length,
+                                            bool& locked) {
+    size_t range_start = 0;
+    size_t range_length = 0;
+    ComputeFullOverlapRange(norm, length, range_start, range_length);
+    if (range_length < kStretchMinPlayLength) {
+        return;
+    }
+
+    if (!locked) {
+        play_start = range_start;
+        play_length = range_length;
+        locked = true;
+        return;
+    }
+
+    size_t play_end = play_start + play_length;
+    size_t range_end = range_start + range_length;
+    if (range_end > play_end && range_start <= play_end) {
+        play_length = range_end - play_start;
+    }
+}
+
 // ============================================================
 // PARAMETER METADATA
 // ============================================================
 static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
 
-static const int s_paramCount = 6;
+static const int s_paramCount = 7;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Loop mode",
@@ -205,6 +231,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 0,
         defaultValue : {.float_value = 0.5f},
         knobMapping : 1,
+        midiCCMapping : -1
+    },
+    {
+        name : "Attack",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 3,
         midiCCMapping : -1
     },
     {
@@ -359,6 +393,7 @@ void MicroLooperModule::ResetBuffer() {
     below_count_ = 0;
     stretch_declick_count_ = 0;
     stretch_declick_prev_ = 0.0f;
+    stretch_fade_in_count_ = 0;
 }
 
 void MicroLooperModule::ParameterChanged(int parameter_id) {
@@ -410,10 +445,13 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     stretched_play_start_b_ = 0;
     stretched_play_length_a_ = 0;
     stretched_play_length_b_ = 0;
+    stretched_play_locked_a_ = false;
+    stretched_play_locked_b_ = false;
     stretched_buffer_normalized_a_ = false;
     stretched_buffer_normalized_b_ = false;
     stretch_declick_count_ = 0;
     stretch_declick_prev_ = 0.0f;
+    stretch_fade_in_count_ = 0;
     stretch_speed_ = 1.0f;
     stretch_playing_head_.Reset();
     s_stretch_state = StretchState::IDLE;
@@ -477,9 +515,14 @@ void MicroLooperModule::WriteBuffer(float in)
     float recording_head_position_f = recording_head_.GetHeadPosition();
     size_t recording_index = static_cast<size_t>(recording_head_position_f);
 
-    float fading = GetParameterAsFloat(FADING);
-    buffer_[recording_index] *= fading;
-    buffer_[recording_index] += in;
+    int mode = GetParameterAsBinnedValue(LOOP_MODE);
+    if (mode == OVERDUB) {
+        float fading = GetParameterAsFloat(FADING);
+        buffer_[recording_index] *= fading;
+        buffer_[recording_index] += in;
+    } else {
+        buffer_[recording_index] = in;
+    }
 
     // Cap length to the buffer size to avoid invalid lengths in OVERDUB mode.
     if (loop_length_ < kMicroLoopMaxSize) {
@@ -508,12 +551,14 @@ void MicroLooperModule::StartStretching()
         stretched_ready_length_b_ = 0;
         stretched_play_start_b_ = 0;
         stretched_play_length_b_ = 0;
+        stretched_play_locked_b_ = false;
         stretched_buffer_normalized_b_ = false;
     } else {
         stretched_length_a_ = kMicroLoopMaxStretchedSize;
         stretched_ready_length_a_ = 0;
         stretched_play_start_a_ = 0;
         stretched_play_length_a_ = 0;
+        stretched_play_locked_a_ = false;
         stretched_buffer_normalized_a_ = false;
     }
 
@@ -528,6 +573,7 @@ void MicroLooperModule::StartStretching()
     if (!use_stretched_buffer_) {
         stretch_playing_head_.Reset();
     }
+    stretch_fade_in_count_ = 0;
 }
 
 float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
@@ -614,12 +660,20 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             size_t stretch_start = 0;
             bool normalized;
             if (active_stretch_buffer_) {
-                stretch_len = (stretched_play_length_b_ > 0) ? stretched_play_length_b_ : stretched_ready_length_b_;
-                stretch_start = (stretched_play_length_b_ > 0) ? stretched_play_start_b_ : 0;
+                stretch_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                  ? stretched_play_length_b_
+                                  : stretched_ready_length_b_;
+                stretch_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                    ? stretched_play_start_b_
+                                    : 0;
                 normalized = stretched_buffer_normalized_b_;
             } else {
-                stretch_len = (stretched_play_length_a_ > 0) ? stretched_play_length_a_ : stretched_ready_length_a_;
-                stretch_start = (stretched_play_length_a_ > 0) ? stretched_play_start_a_ : 0;
+                stretch_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                  ? stretched_play_length_a_
+                                  : stretched_ready_length_a_;
+                stretch_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                    ? stretched_play_start_a_
+                                    : 0;
                 normalized = stretched_buffer_normalized_a_;
             }
 
@@ -638,6 +692,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
                     stretch_sample = stretch_declick_prev_ * (1.0f - w) + stretch_sample * w;
                     stretch_declick_count_--;
+                }
+                if (stretch_fade_in_count_ > 0) {
+                    size_t fade_in_samples = std::max(static_cast<size_t>(128), static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples));
+                    float t = (fade_in_samples - stretch_fade_in_count_)
+                              / static_cast<float>(fade_in_samples);
+                    stretch_sample *= t;
+                    stretch_fade_in_count_--;
                 }
                 m_audioLeft += stretch_sample * freeze_mix;
 
@@ -864,12 +925,28 @@ bool MicroLooperModule::Poll() {
                     if (s_synth_count >= 6) {
                         if (write_stretch_buffer_) {
                             stretched_ready_length_b_ = stretch_write_pos_;
+                            UpdateStreamingPlayRange(s_stretch_norm_b, stretched_ready_length_b_,
+                                                     stretched_play_start_b_, stretched_play_length_b_,
+                                                     stretched_play_locked_b_);
                         } else {
                             stretched_ready_length_a_ = stretch_write_pos_;
+                            UpdateStreamingPlayRange(s_stretch_norm_a, stretched_ready_length_a_,
+                                                     stretched_play_start_a_, stretched_play_length_a_,
+                                                     stretched_play_locked_a_);
                         }
-                        if (active_stretch_buffer_ != write_stretch_buffer_) {
+                        bool play_ready = false;
+                        if (write_stretch_buffer_) {
+                            play_ready = (stretched_play_locked_b_ &&
+                                          stretched_play_length_b_ >= kStretchMinPlayLength);
+                        } else {
+                            play_ready = (stretched_play_locked_a_ &&
+                                          stretched_play_length_a_ >= kStretchMinPlayLength);
+                        }
+                        if (play_ready && active_stretch_buffer_ != write_stretch_buffer_) {
                             active_stretch_buffer_ = write_stretch_buffer_;
                             use_stretched_buffer_ = true;
+                            stretch_fade_in_count_ = std::max(static_cast<size_t>(128), static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples));
+
                         }
                     }
                     if (s_synth_count % 2 == 0) {
@@ -960,9 +1037,11 @@ bool MicroLooperModule::Poll() {
                     if (write_stretch_buffer_) {
                         stretched_play_start_b_ = play_start;
                         stretched_play_length_b_ = play_length;
+                        stretched_play_locked_b_ = (play_length > 0);
                     } else {
                         stretched_play_start_a_ = play_start;
                         stretched_play_length_a_ = play_length;
+                        stretched_play_locked_a_ = (play_length > 0);
                     }
                 }
 

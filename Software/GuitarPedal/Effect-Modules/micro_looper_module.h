@@ -33,6 +33,7 @@ class MicroLooperModule : public BaseEffectModule
       FADING,
       IN_MIX,
       BALANCE,
+      ATTACK,
       SENSITIVITY,
       PARAM_COUNT
     };
@@ -115,10 +116,13 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretched_play_start_b_ = 0;
     size_t stretched_play_length_a_ = 0;
     size_t stretched_play_length_b_ = 0;
+    bool stretched_play_locked_a_ = false;
+    bool stretched_play_locked_b_ = false;
     bool stretched_buffer_normalized_a_ = false;
     bool stretched_buffer_normalized_b_ = false;
     uint32_t stretch_declick_count_ = 0;
     float stretch_declick_prev_ = 0.0f;
+    uint32_t stretch_fade_in_count_ = 0;
 
     // ============================================================
     // AUTO-START (envelope follower + threshold + hysteresis)
