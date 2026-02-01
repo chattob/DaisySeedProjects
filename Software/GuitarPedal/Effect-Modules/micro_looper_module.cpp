@@ -27,6 +27,8 @@ enum class StretchState {
 };
 
 constexpr float eps = 1e-12f;
+constexpr float kStretchFullOverlapRatio = 0.98f;
+constexpr uint32_t kStretchDeclickSamples = 32;
 
 // RNG for phase randomization
 struct XorShift32 {
@@ -100,6 +102,61 @@ static inline void OLA_AddFrame(float* out, float* norm, size_t out_size,
         out[p] += x[src_i];
         norm[p] += w2[src_i];
     }
+}
+
+static inline void ComputeFullOverlapRange(const float* norm, size_t length,
+                                           size_t& start, size_t& play_length) {
+    start = 0;
+    play_length = length;
+    if (length < 2) {
+        return;
+    }
+
+    float max_norm = 0.0f;
+    float sum_norm = 0.0f;
+    size_t count = 0;
+    for (size_t i = 0; i < length; ++i) {
+        float v = norm[i];
+        if (v > max_norm) {
+            max_norm = v;
+        }
+        if (v > eps) {
+            sum_norm += v;
+            ++count;
+        }
+    }
+    if (max_norm <= eps) {
+        return;
+    }
+
+    float ref_norm = max_norm;
+    if (count > 0) {
+        float avg_norm = sum_norm / static_cast<float>(count);
+        if (max_norm > avg_norm * 1.05f) {
+            ref_norm = avg_norm;
+        }
+    }
+
+    float threshold = ref_norm * kStretchFullOverlapRatio;
+    size_t first = 0;
+    while (first < length && norm[first] < threshold) {
+        ++first;
+    }
+    if (first == length) {
+        return;
+    }
+    size_t last = length - 1;
+    while (last > first && norm[last] < threshold) {
+        --last;
+    }
+
+    size_t len = last - first + 1;
+    if (len < 2) {
+        return;
+    }
+
+    start = first;
+    play_length = len;
 }
 
 // ============================================================
@@ -300,6 +357,8 @@ void MicroLooperModule::ResetBuffer() {
     // Reset auto-start counters (keep auto_armed_ state)
     above_count_ = 0;
     below_count_ = 0;
+    stretch_declick_count_ = 0;
+    stretch_declick_prev_ = 0.0f;
 }
 
 void MicroLooperModule::ParameterChanged(int parameter_id) {
@@ -347,8 +406,14 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     stretched_length_b_ = 0;
     stretched_ready_length_a_ = 0;
     stretched_ready_length_b_ = 0;
+    stretched_play_start_a_ = 0;
+    stretched_play_start_b_ = 0;
+    stretched_play_length_a_ = 0;
+    stretched_play_length_b_ = 0;
     stretched_buffer_normalized_a_ = false;
     stretched_buffer_normalized_b_ = false;
+    stretch_declick_count_ = 0;
+    stretch_declick_prev_ = 0.0f;
     stretch_speed_ = 1.0f;
     stretch_playing_head_.Reset();
     s_stretch_state = StretchState::IDLE;
@@ -441,10 +506,14 @@ void MicroLooperModule::StartStretching()
     if (write_stretch_buffer_) {
         stretched_length_b_ = kMicroLoopMaxStretchedSize;
         stretched_ready_length_b_ = 0;
+        stretched_play_start_b_ = 0;
+        stretched_play_length_b_ = 0;
         stretched_buffer_normalized_b_ = false;
     } else {
         stretched_length_a_ = kMicroLoopMaxStretchedSize;
         stretched_ready_length_a_ = 0;
+        stretched_play_start_a_ = 0;
+        stretched_play_length_a_ = 0;
         stretched_buffer_normalized_a_ = false;
     }
 
@@ -542,12 +611,15 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         if (use_stretched_buffer_) {
             // Get length from active buffer
             size_t stretch_len;
+            size_t stretch_start = 0;
             bool normalized;
             if (active_stretch_buffer_) {
-                stretch_len = stretched_ready_length_b_;
+                stretch_len = (stretched_play_length_b_ > 0) ? stretched_play_length_b_ : stretched_ready_length_b_;
+                stretch_start = (stretched_play_length_b_ > 0) ? stretched_play_start_b_ : 0;
                 normalized = stretched_buffer_normalized_b_;
             } else {
-                stretch_len = stretched_ready_length_a_;
+                stretch_len = (stretched_play_length_a_ > 0) ? stretched_play_length_a_ : stretched_ready_length_a_;
+                stretch_start = (stretched_play_length_a_ > 0) ? stretched_play_start_a_ : 0;
                 normalized = stretched_buffer_normalized_a_;
             }
 
@@ -559,10 +631,23 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     stretch_playing_head_position %= stretch_len;
                 }
 
-                m_audioLeft += ReadStretchedSample(stretch_playing_head_position,
-                                                   normalized) * freeze_mix;
+                size_t stretch_idx = stretch_start + stretch_playing_head_position;
+                float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
+                if (stretch_declick_count_ > 0) {
+                    float t = 1.0f - (stretch_declick_count_ / static_cast<float>(kStretchDeclickSamples));
+                    float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
+                    stretch_sample = stretch_declick_prev_ * (1.0f - w) + stretch_sample * w;
+                    stretch_declick_count_--;
+                }
+                m_audioLeft += stretch_sample * freeze_mix;
 
-                stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                bool bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                if (bounced) {
+                    stretch_declick_count_ = kStretchDeclickSamples;
+                    stretch_declick_prev_ = stretch_sample;
+                } else if (stretch_declick_count_ == 0) {
+                    stretch_declick_prev_ = stretch_sample;
+                }
             }
         }
         m_audioLeft += buffer_[playing_head_position] * loop_mix;
@@ -867,6 +952,19 @@ bool MicroLooperModule::Poll() {
                         write_buffer[i] = (fabsf(norm) > eps) ? (write_buffer[i] / norm) : 0.0f;
                     }
                 }*/
+
+                if (final_length > 0) {
+                    size_t play_start = 0;
+                    size_t play_length = final_length;
+                    ComputeFullOverlapRange(write_norm, final_length, play_start, play_length);
+                    if (write_stretch_buffer_) {
+                        stretched_play_start_b_ = play_start;
+                        stretched_play_length_b_ = play_length;
+                    } else {
+                        stretched_play_start_a_ = play_start;
+                        stretched_play_length_a_ = play_length;
+                    }
+                }
 
                 // Mark write buffer as normalized
                 if (write_stretch_buffer_) {

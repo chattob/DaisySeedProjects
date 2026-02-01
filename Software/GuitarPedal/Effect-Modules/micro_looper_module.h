@@ -111,8 +111,14 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretched_length_b_ = 0;
     size_t stretched_ready_length_a_ = 0;
     size_t stretched_ready_length_b_ = 0;
+    size_t stretched_play_start_a_ = 0;
+    size_t stretched_play_start_b_ = 0;
+    size_t stretched_play_length_a_ = 0;
+    size_t stretched_play_length_b_ = 0;
     bool stretched_buffer_normalized_a_ = false;
     bool stretched_buffer_normalized_b_ = false;
+    uint32_t stretch_declick_count_ = 0;
+    float stretch_declick_prev_ = 0.0f;
 
     // ============================================================
     // AUTO-START (envelope follower + threshold + hysteresis)
