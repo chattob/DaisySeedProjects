@@ -292,7 +292,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
 //                               MAIN SECTION
 //======================================================================
 int main(void) {
-    const bool boost = false; // true enables cpu boost (480Mhz instead of 400Mhz)
+    const bool boost = true; // true enables cpu boost (480Mhz instead of 400Mhz)
 
     g_hardware.Init(kBlockSize, boost);
 
@@ -338,6 +338,7 @@ int main(void) {
     crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.8f);
     crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
+    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.2f);
 
     g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(polyoctave);
@@ -360,17 +361,19 @@ int main(void) {
 
     // Setup knob routes
     //g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
-    g_routing.knobs[0].push_back({g_effects.mixer, FilterModule::LEVEL});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
-    //g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
 
     g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::BALANCE});//, [](float x) { return 0.04f + 0.96f * x; }});
 
-    g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    /*g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
     g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
-
+*/
+    g_routing.knobs[3].push_back({crusher, CrusherModule::JITTER});
+    
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 

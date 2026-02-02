@@ -17,7 +17,7 @@ static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 8192;
 
-static constexpr size_t kMicroLoopMaxSize = 16384 * 3;
+static constexpr size_t kMicroLoopMaxSize = 16384 * 6;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -55,6 +55,9 @@ class MicroLooperModule : public BaseEffectModule
 
   private:
     void ResetBuffer();
+    void ResetLoopState();
+    void ResetStretchState(bool preserve_playback);
+    void ResetAutoStartCounters();
 
     // Loop buffer - stored in SDRAM
     static float DSY_SDRAM_BSS buffer_[kMicroLoopMaxSize];
@@ -72,8 +75,8 @@ class MicroLooperModule : public BaseEffectModule
     size_t loop_length_ = 0;
     size_t mod_ = kMicroLoopMaxSize;
 
-    bool freeze_playing_ = false;
-    bool loop_playing_ = false;
+    bool freeze_playing_ = true;
+    bool loop_playing_ = true;
 
     bool speed_error_ = false;
     float smoothed_speed_ = 1.0f;
@@ -123,6 +126,9 @@ class MicroLooperModule : public BaseEffectModule
     uint32_t stretch_declick_count_ = 0;
     float stretch_declick_prev_ = 0.0f;
     uint32_t stretch_fade_in_count_ = 0;
+    size_t stretch_swap_fade_count_ = 0;
+    size_t stretch_swap_fade_samples_ = 0;
+    bool stretch_swap_prev_buffer_ = false;
 
     // ============================================================
     // AUTO-START (envelope follower + threshold + hysteresis)

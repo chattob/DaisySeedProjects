@@ -4,6 +4,7 @@
 
 #include "base_effect_module.h"
 #include "daisysp.h"
+#include "../Util/XorShift32.h"
 #include <q/fx/biquad.hpp>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -25,14 +26,17 @@ class Bitcrusher {
         targetRate = sample_rate;
         phaseAccum = 0.0f;
         heldSample = 0.0f;
+        jitterAmount = 0.0f;
     }
 
     // Sample rate reduction uses a phase accumulator to allow non-integer
     // downsample ratios and smooth transitions when modulating the rate
     // (e.g., from a pitch detector). Each sample, we accumulate targetRate.
     // When it exceeds sampleRate, we grab and crush a new sample.
+    // Jitter adds randomization to the hold time threshold.
     float Process(float in) {
         phaseAccum += targetRate;
+        phaseAccum += jitterAmount * rng.randSigned() * targetRate;
         if (phaseAccum >= sampleRate) {
             phaseAccum -= sampleRate;
             heldSample = truncf(in * quant) / quant;
@@ -61,12 +65,16 @@ class Bitcrusher {
     float getTargetSampleRate() const { return targetRate; }
     float getSampleRate() const { return sampleRate; }
 
+    void setJitter(float amount) { jitterAmount = amount; }
+
   private:
     float quant;
     float sampleRate;
     float targetRate;
     float phaseAccum;
     float heldSample;
+    float jitterAmount;
+    XorShift32 rng;
 };
 
 class CrusherModule : public BaseEffectModule {
@@ -78,6 +86,7 @@ class CrusherModule : public BaseEffectModule {
       LEVEL = 0,
       BITS,
       RATE,
+      JITTER,
       CUTOFF,
       MIX,
       PARAM_COUNT

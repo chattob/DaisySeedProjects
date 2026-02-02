@@ -28,9 +28,11 @@ enum class StretchState {
 
 constexpr float eps = 1e-12f;
 constexpr float kStretchFullOverlapRatio = 0.98f;
-constexpr size_t kStretchDeclickSamples = 32;
+constexpr size_t kStretchDeclickSamples = 128;
 constexpr size_t kStretchFadeInSamples = 24000;
 constexpr size_t kStretchMinPlayLength = H_OUT * 2;
+constexpr size_t kStretchMinPingPongLength = H_OUT * 4;
+constexpr float kStretchSwapFadeSeconds = 0.12f;
 
 // RNG for phase randomization
 struct XorShift32 {
@@ -299,6 +301,11 @@ void MicroLooperModule::Init(float sample_rate)
     start_hold_samps_ = static_cast<uint32_t>(sample_rate * start_hold_ms_ * 0.001f);
     rearm_samps_ = static_cast<uint32_t>(sample_rate * rearm_ms_ * 0.001f);
 
+    stretch_swap_fade_samples_ = static_cast<size_t>(sample_rate * kStretchSwapFadeSeconds);
+    if (stretch_swap_fade_samples_ < 256) {
+        stretch_swap_fade_samples_ = 256;
+    }
+
     // Initialize auto-start state
     env_ = 0.0f;
     above_count_ = 0;
@@ -360,12 +367,20 @@ void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
     }
 }
 
-void MicroLooperModule::ResetBuffer() {
+void MicroLooperModule::ResetLoopState() {
     is_playing_         = false;
     is_recording_       = false;
     first_layer_        = true;
     loop_length_        = 0;
     mod_                = kMicroLoopMaxSize;
+
+    playing_head_.Reset();
+    recording_head_.Reset();
+    prev_wraparound_count_ = 0;
+    samples_since_speed_change_ = 0;
+}
+
+void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     is_stretching_      = false;
     streaming_stretch_  = false;
     stretch_read_pos_   = 0;
@@ -374,26 +389,53 @@ void MicroLooperModule::ResetBuffer() {
     stretch_frames_done_ = 0;
     stretch_clear_pending_ = false;
     stretch_clear_pos_ = 0;
-
-    // Keep stretched buffer playback state (use_stretched_buffer_, active_stretch_buffer_)
-    // so playback continues during re-recording.
-    // Only reset the write buffer state - it will be set up by StartStretching()
-    write_stretch_buffer_ = false;
-
-    playing_head_.Reset();
-    recording_head_.Reset();
-    prev_wraparound_count_ = 0;
-    samples_since_speed_change_ = 0;
+    stretch_declick_count_ = 0;
+    stretch_declick_prev_ = 0.0f;
+    stretch_fade_in_count_ = 0;
+    stretch_swap_fade_count_ = 0;
+    stretch_swap_prev_buffer_ = false;
 
     s_stretch_state = StretchState::IDLE;
     s_synth_count = 0;
 
-    // Reset auto-start counters (keep auto_armed_ state)
+    // Keep stretched buffer playback state (use_stretched_buffer_, active_stretch_buffer_)
+    // so playback continues during re-recording.
+    // Only reset the write buffer state - it will be set up by StartStretching()
+    if (preserve_playback) {
+        write_stretch_buffer_ = false;
+        return;
+    }
+
+    use_stretched_buffer_ = false;
+    active_stretch_buffer_ = false;
+    write_stretch_buffer_ = false;
+    stretched_length_a_ = 0;
+    stretched_length_b_ = 0;
+    stretched_ready_length_a_ = 0;
+    stretched_ready_length_b_ = 0;
+    stretched_play_start_a_ = 0;
+    stretched_play_start_b_ = 0;
+    stretched_play_length_a_ = 0;
+    stretched_play_length_b_ = 0;
+    stretched_play_locked_a_ = false;
+    stretched_play_locked_b_ = false;
+    stretched_buffer_normalized_a_ = false;
+    stretched_buffer_normalized_b_ = false;
+    stretch_speed_ = 1.0f;
+    stretch_playing_head_.Reset();
+}
+
+void MicroLooperModule::ResetAutoStartCounters() {
     above_count_ = 0;
     below_count_ = 0;
-    stretch_declick_count_ = 0;
-    stretch_declick_prev_ = 0.0f;
-    stretch_fade_in_count_ = 0;
+}
+
+void MicroLooperModule::ResetBuffer() {
+    ResetLoopState();
+    ResetStretchState(true);
+
+    // Reset auto-start counters (keep auto_armed_ state)
+    ResetAutoStartCounters();
 }
 
 void MicroLooperModule::ParameterChanged(int parameter_id) {
@@ -402,7 +444,9 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     }
 
     // Mode switch should be a clean slate to avoid stale state mixing.
-    ResetBuffer();
+    ResetLoopState();
+    ResetStretchState(false);
+    ResetAutoStartCounters();
 
     // Stop any pending actions.
     armed_recording_ = false;
@@ -417,45 +461,10 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     speed_error_ = false;
     smoothed_speed_ = 1.0f;
     target_speed_ = 1.0f;
-    samples_since_speed_change_ = 0;
 
     // Reset auto-start tracking.
     env_ = 0.0f;
     auto_armed_ = true;
-    above_count_ = 0;
-    below_count_ = 0;
-
-    // Fully disable stretched playback and clear lengths.
-    is_stretching_ = false;
-    streaming_stretch_ = false;
-    use_stretched_buffer_ = false;
-    active_stretch_buffer_ = false;
-    write_stretch_buffer_ = false;
-    stretch_read_pos_ = 0;
-    stretch_write_pos_ = 0;
-    stretch_total_frames_ = 0;
-    stretch_frames_done_ = 0;
-    stretch_clear_pending_ = false;
-    stretch_clear_pos_ = 0;
-    stretched_length_a_ = 0;
-    stretched_length_b_ = 0;
-    stretched_ready_length_a_ = 0;
-    stretched_ready_length_b_ = 0;
-    stretched_play_start_a_ = 0;
-    stretched_play_start_b_ = 0;
-    stretched_play_length_a_ = 0;
-    stretched_play_length_b_ = 0;
-    stretched_play_locked_a_ = false;
-    stretched_play_locked_b_ = false;
-    stretched_buffer_normalized_a_ = false;
-    stretched_buffer_normalized_b_ = false;
-    stretch_declick_count_ = 0;
-    stretch_declick_prev_ = 0.0f;
-    stretch_fade_in_count_ = 0;
-    stretch_speed_ = 1.0f;
-    stretch_playing_head_.Reset();
-    s_stretch_state = StretchState::IDLE;
-    s_synth_count = 0;
 
     // Clear base loop buffer so fading doesn't pull old audio across modes.
     std::memset(buffer_, 0, sizeof(buffer_));
@@ -687,6 +696,43 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 
                 size_t stretch_idx = stretch_start + stretch_playing_head_position;
                 float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
+                if (stretch_swap_fade_count_ > 0 && stretch_swap_fade_samples_ > 0) {
+                    size_t prev_len = 0;
+                    size_t prev_start = 0;
+                    if (stretch_swap_prev_buffer_) {
+                        prev_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                       ? stretched_play_length_b_
+                                       : stretched_ready_length_b_;
+                        prev_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                         ? stretched_play_start_b_
+                                         : 0;
+                    } else {
+                        prev_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                       ? stretched_play_length_a_
+                                       : stretched_ready_length_a_;
+                        prev_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                         ? stretched_play_start_a_
+                                         : 0;
+                    }
+
+                    if (prev_len > 0) {
+                        size_t prev_pos = stretch_playing_head_position;
+                        if (prev_pos >= prev_len) {
+                            prev_pos %= prev_len;
+                        }
+                        size_t prev_idx = prev_start + prev_pos;
+                        float prev_sample = stretch_swap_prev_buffer_
+                                                ? stretched_buffer_b_[prev_idx]
+                                                : stretched_buffer_a_[prev_idx];
+                        float t = (stretch_swap_fade_samples_ - stretch_swap_fade_count_)
+                                  / static_cast<float>(stretch_swap_fade_samples_);
+                        float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
+                        stretch_sample = prev_sample * (1.0f - w) + stretch_sample * w;
+                        stretch_swap_fade_count_--;
+                    } else {
+                        stretch_swap_fade_count_ = 0;
+                    }
+                }
                 if (stretch_declick_count_ > 0) {
                     float t = 1.0f - (stretch_declick_count_ / static_cast<float>(kStretchDeclickSamples));
                     float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
@@ -694,7 +740,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     stretch_declick_count_--;
                 }
                 if (stretch_fade_in_count_ > 0) {
-                    size_t fade_in_samples = std::max(static_cast<size_t>(128), static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples));
+                    size_t fade_in_samples = 1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
                     float t = (fade_in_samples - stretch_fade_in_count_)
                               / static_cast<float>(fade_in_samples);
                     stretch_sample *= t;
@@ -702,7 +748,12 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 }
                 m_audioLeft += stretch_sample * freeze_mix;
 
-                bool bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                bool bounced = false;
+                if (true && stretch_len >= kStretchMinPingPongLength) {
+                    bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                } else {
+                    stretch_playing_head_.UpdatePosition(stretch_len);
+                }
                 if (bounced) {
                     stretch_declick_count_ = kStretchDeclickSamples;
                     stretch_declick_prev_ = stretch_sample;
@@ -943,10 +994,18 @@ bool MicroLooperModule::Poll() {
                                           stretched_play_length_a_ >= kStretchMinPlayLength);
                         }
                         if (play_ready && active_stretch_buffer_ != write_stretch_buffer_) {
+                            const bool was_using = use_stretched_buffer_;
+                            if (was_using) {
+                                stretch_swap_prev_buffer_ = active_stretch_buffer_;
+                                stretch_swap_fade_count_ = stretch_swap_fade_samples_;
+                                stretch_fade_in_count_ = 0;
+                            } else {
+                                stretch_swap_fade_count_ = 0;
+                                stretch_fade_in_count_ =
+                                    1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                            }
                             active_stretch_buffer_ = write_stretch_buffer_;
                             use_stretched_buffer_ = true;
-                            stretch_fade_in_count_ = std::max(static_cast<size_t>(128), static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples));
-
                         }
                     }
                     if (s_synth_count % 2 == 0) {
