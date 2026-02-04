@@ -299,7 +299,7 @@ void MicroLooperModule::Init(float sample_rate)
 void MicroLooperModule::BypassFootswitchPressed() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
-        if (!is_stretching_ && mod_ >= N) {
+        if (!is_stretching_ && (loop_length_ >= N)) {
             StartStretching();
         }
         freeze_playing_ = true;
@@ -312,10 +312,8 @@ void MicroLooperModule::AlternateFootswitchPressed() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
          if (!is_recording_) {
-            clock_beat_ = false;
             armed_recording_ = true;
         } else {
-            clock_beat_ = false;
             armed_stop_ = true;
         }
         loop_playing_ = true;
@@ -353,12 +351,9 @@ void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
 void MicroLooperModule::ResetLoopState() {
     is_playing_         = false;
     is_recording_       = false;
-    first_layer_        = true;
     loop_length_        = 0;
-    mod_                = kMicroLoopMaxSize;
 
     playing_head_.Reset();
-    recording_head_.Reset();
     prev_wraparound_count_ = 0;
     samples_since_speed_change_ = 0;
 }
@@ -366,6 +361,7 @@ void MicroLooperModule::ResetLoopState() {
 void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     is_stretching_      = false;
     streaming_stretch_  = false;
+    stretch_source_wrap_length_ = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
     stretch_total_frames_ = 0;
@@ -434,7 +430,6 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     // Stop any pending actions.
     armed_recording_ = false;
     armed_stop_ = false;
-    clock_beat_ = false;
 
     // Disable mode-specific playback toggles.
     loop_playing_ = false;
@@ -504,16 +499,16 @@ void MicroLooperModule::AutoStartLogic()
 
 void MicroLooperModule::WriteBuffer(float in)
 {
-    float recording_head_position_f = recording_head_.GetHeadPosition();
-    size_t recording_index = static_cast<size_t>(recording_head_position_f);
+    float head_position_f = playing_head_.GetHeadPosition();
+    size_t write_index = static_cast<size_t>(head_position_f);
 
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
         float fading = GetParameterAsFloat(FADING);
-        buffer_[recording_index] *= fading;
-        buffer_[recording_index] += in;
+        buffer_[write_index] *= fading;
+        buffer_[write_index] += in;
     } else {
-        buffer_[recording_index] = in;
+        buffer_[write_index] = in;
     }
 
     // Cap length to the buffer size to avoid invalid lengths in OVERDUB mode.
@@ -526,6 +521,25 @@ void MicroLooperModule::WriteBuffer(float in)
 
 void MicroLooperModule::StartStretching()
 {
+    // Calculate source length based on latched slice parameter
+    stretch_slice_ = GetParameterAsFloat(SLICE);
+    if (stretch_slice_ < kMicroLoopMinSlice) {
+        stretch_slice_ = kMicroLoopMinSlice;
+    }
+    size_t slice_length = static_cast<size_t>(stretch_slice_ * kMicroLoopMaxSize);
+    if (slice_length < N) {
+        slice_length = N;
+    } else if (slice_length > kMicroLoopMaxSize) {
+        slice_length = kMicroLoopMaxSize;
+    }
+    stretch_source_wrap_length_ = slice_length;
+
+    // If we're currently recording, stop on the next wraparound so the
+    // stretcher can finalize once a full slice has been captured.
+    if (is_recording_) {
+        armed_stop_ = true;
+    }
+
     // Always use streaming mode now
     streaming_stretch_ = true;
     stretch_read_pos_ = 0;
@@ -624,10 +638,14 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
     if (m_isEnabled) {
         m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
         float slice = GetParameterAsFloat(SLICE);
+        if (slice < kMicroLoopMinSlice) {
+            slice = kMicroLoopMinSlice;
+        }
         auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
         int mode = GetParameterAsBinnedValue(LOOP_MODE);
         float loop_mix = loop_playing_ ? gains.dry : 0.0f;
         float freeze_mix = freeze_playing_ ? gains.wet : 0.0f;
+        size_t loop_length = static_cast<size_t>(kMicroLoopMaxSize * slice);
 
         if (mode == SAMPLER) {
             // Envelope follower + auto-start logic (runs every sample)
@@ -644,7 +662,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             }
         }
 
-        if (is_playing_ && mod_ > 0) {
+        if (is_playing_) {
             // Read position BEFORE updating
             float playing_head_position_f = playing_head_.GetHeadPosition();
             size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
@@ -752,11 +770,11 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 
             // Update positions AFTER reading
             size_t wraparound_count = playing_head_.GetWrapAroundCount();
-            playing_head_.UpdatePosition(mod_, slice);
+            playing_head_.UpdatePosition(kMicroLoopMaxSize, slice);
             float speed;
 
             if (wraparound_count != playing_head_.GetWrapAroundCount()) {
-                if (speed_error_ && samples_since_speed_change_ >= mod_ / 4) {
+                if (speed_error_ && samples_since_speed_change_ >= loop_length / 4) {
                     target_speed_ = GetNextMarkovSpeed();
                     samples_since_speed_change_ = 0;
                 }
@@ -774,22 +792,26 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             playing_head_.SetSpeed(speed);
             stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
 
-            if (is_recording_) {
-                recording_head_.UpdatePosition(mod_);
-                wraparound_count = recording_head_.GetWrapAroundCount();
+            // Check for wraparound (used for armed stop + SAMPLER auto-stop)
+            wraparound_count = playing_head_.GetWrapAroundCount();
+            if (is_recording_ && (wraparound_count > prev_wraparound_count_)) {
                 int mode = GetParameterAsBinnedValue(LOOP_MODE);
-                if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
-                    armed_stop_ = true;
-                    is_recording_ = false;
+                    if (armed_stop_ || (mode == SAMPLER)) {
+                        loop_length_ = 0;
+                        if (is_stretching_) {
+                            size_t slice_length = static_cast<size_t>(stretch_slice_ * kMicroLoopMaxSize);
+                            if (slice_length < N) {
+                                slice_length = N;
+                            } else if (slice_length > kMicroLoopMaxSize) {
+                                slice_length = kMicroLoopMaxSize;
+                            }
+                        }
+                        armed_stop_ = false;
+                        is_recording_ = false;
+                        is_playing_ = true;
                 }
-                prev_wraparound_count_ = wraparound_count;
-            } else {
-                size_t wraparound_count = playing_head_.GetWrapAroundCount();
-                if (wraparound_count > prev_wraparound_count_) {
-
-                }
-                prev_wraparound_count_ = wraparound_count;
             }
+            prev_wraparound_count_ = wraparound_count;
         }
 
         m_audioRight = m_audioLeft;
@@ -802,47 +824,17 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 bool MicroLooperModule::Poll() {
     // Looper
     if (armed_recording_) {
-        if (midi_sync_) {
-            if(clock_beat_) {
-                ResetBuffer();
-                armed_recording_ = false;
-                clock_beat_ = false;
-                is_recording_ = true;
-                is_playing_ = true;
-                prev_wraparound_count_ = 0;
-            }
-        } else {
-            ResetBuffer();
-            armed_recording_ = false;
-            is_recording_ = true;
-            is_playing_ = true;
-            prev_wraparound_count_ = 0;
-        }
-    }
-
-    bool immediate_stop = false;
-    
-    if (armed_stop_) {
-        int mode = GetParameterAsBinnedValue(LOOP_MODE);
-        if (midi_sync_ && (mode != SAMPLER)) {
-            if(clock_beat_) {
-                clock_beat_ = false;
-                immediate_stop = true;
-            }
-        } else {
-            immediate_stop = true;
-        }
-    }
-
-    if (immediate_stop) {
-        if (first_layer_) {
-            first_layer_ = false;
-            mod_ = (loop_length_ > kMicroLoopMaxSize) ? kMicroLoopMaxSize : loop_length_;
-            loop_length_ = 0;
-        }
-        armed_stop_ = false;
-        is_recording_ = false;
+        ResetBuffer();
+        armed_recording_ = false;
+        is_recording_ = true;
         is_playing_ = true;
+        prev_wraparound_count_ = 0;
+    }
+
+    // Stop only occurs at wraparound in ProcessStereo; if we're not recording,
+    // clear any stale armed stop state.
+    if (armed_stop_ && !is_recording_) {
+        armed_stop_ = false;
     }
 
     if (is_stretching_) {
@@ -874,8 +866,10 @@ bool MicroLooperModule::Poll() {
 
             case StretchState::GATHER_FRAME:
                 {
-                    // Use loop_length_ if still recording, otherwise mod_
-                    size_t buffer_len = is_recording_ ? loop_length_ : mod_;
+                    size_t buffer_len = stretch_source_wrap_length_;
+                    if (is_recording_ && buffer_len > loop_length_) {
+                        buffer_len = loop_length_;
+                    }
                     GatherFrameFromBuffer(s_snapshot_buffer, buffer_, buffer_len, stretch_read_pos_);
                     s_stretch_state = StretchState::APPLY_ANALYSIS_WINDOW;
                 }
@@ -961,13 +955,19 @@ bool MicroLooperModule::Poll() {
                 if(s_synth_count < STRETCH) {
                     // First input frame  stretched - switch to new buffer
                     if (s_synth_count >= 6) {
+                        size_t ready_len = stretch_write_pos_;
+                        if (ready_len > (N - H_OUT)) {
+                            ready_len -= (N - H_OUT);
+                        } else {
+                            ready_len = 0;
+                        }
                         if (write_stretch_buffer_) {
-                            stretched_ready_length_b_ = stretch_write_pos_;
+                            stretched_ready_length_b_ = ready_len;
                             UpdateStreamingPlayRange(s_stretch_norm_b, stretched_ready_length_b_,
                                                      stretched_play_start_b_, stretched_play_length_b_,
                                                      stretched_play_locked_b_);
                         } else {
-                            stretched_ready_length_a_ = stretch_write_pos_;
+                            stretched_ready_length_a_ = ready_len;
                             UpdateStreamingPlayRange(s_stretch_norm_a, stretched_ready_length_a_,
                                                      stretched_play_start_a_, stretched_play_length_a_,
                                                      stretched_play_locked_a_);
@@ -1007,8 +1007,10 @@ bool MicroLooperModule::Poll() {
                 break;
 
             case StretchState::ADVANCE_READ:{
-                // Use loop_length_ if still recording, otherwise mod_
-                size_t available_samples = is_recording_ ? loop_length_ : mod_;
+                size_t available_samples = stretch_source_wrap_length_;
+                if (is_recording_ && available_samples > loop_length_) {
+                    available_samples = loop_length_;
+                }
 
                 // Calculate next read position
                 size_t next_read_pos = stretch_read_pos_ + H_IN;

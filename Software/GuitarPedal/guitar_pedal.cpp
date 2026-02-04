@@ -8,7 +8,6 @@
 #include "Effect-Modules/delay_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/crusher_module.h"
-#include "Effect-Modules/filter_module.h"
 #include "Effect-Modules/mixer_module.h"
 #include "Effect-Modules/reverb_module.h"
 #include "Util/audio_utilities.h"
@@ -307,7 +306,6 @@ int main(void) {
     auto polyoctave         = new PolyOctaveModule();
     auto delay              = new DelayModule();
     auto distortion         = new DistortionModule();
-    auto filter             = new FilterModule();
     auto crusher            = new CrusherModule();
     g_effects.reverb        = new ReverbModule();
 
@@ -329,28 +327,25 @@ int main(void) {
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
     crusher->SetParameterAsBinnedValue(CrusherModule::BITS, 32);
-    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.8f);
+    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.7f);
     crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
-    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.4f);
+    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.2f);
 
     /*reverb->SetParameterAsBool(CloudSeedModule::STEREO_IN, false);
     reverb->SetParameterAsBool(CloudSeedModule::SUM_TO_MONO, false);
     reverb->SetParameterAsFloat(CloudSeedModule::MOD_AMOUNT, 0.0f);
     reverb->SetParameterAsFloat(CloudSeedModule::MOD_RATE, 0.0f);*/
     g_effects.reverb->SetParameterAsFloat(ReverbModule::MIX, 1.0f);
-    g_effects.reverb->SetParameterAsFloat(ReverbModule::DAMP, 1.0f);
+    g_effects.reverb->SetParameterAsFloat(ReverbModule::DAMP, 0.0f);
     //reverb->SetParameterAsFloat(CloudSeedModule::MOD_AMOUNT, 0.0f);
-
-    filter->SetParameterAsFloat(FilterModule::RESONANCE, 0.8f);
 
     g_effects.mixer = new MixerModule();
 
-    //g_effects.chain.push_back(g_effects.micro_looper);
+    g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(g_effects.reverb);
     g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(filter);
     g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
     g_effects.chain.push_back(g_effects.mixer);  // Mixer last in chain
@@ -375,22 +370,18 @@ int main(void) {
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
 
-    /*g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
-    g_routing.knobs[1].push_back({filter, FilterModule::RESONANCE});*/
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/8.0f + x * 7.0f/8.0f; }});
 
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
-
-    g_routing.knobs[3].push_back({crusher, CrusherModule::JITTER});
-    g_routing.knobs[3].push_back({filter, FilterModule::CUTOFF, [](float x) { return 1.0f - x;}});
     
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({filter, FilterModule::MIX, [](float x) { return x < 0.5f ? 0.0f : 1.0f; }});
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
-    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 1.2f + 0.4f; }});
+    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x + 0.5f; }});
 
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
@@ -398,6 +389,7 @@ int main(void) {
     // Alternate footswitch: toggle delay pressed & looper held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});
 
@@ -613,6 +605,7 @@ int main(void) {
                         g_effects.micro_looper->SetEnabled(true);
                         g_effects.reverb->SetEnabled(false);
                     }
+                    break;
             }
 
             if (g_switches.enabledCache[sw] == true) {

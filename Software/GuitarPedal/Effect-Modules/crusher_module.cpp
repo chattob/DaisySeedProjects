@@ -104,7 +104,7 @@ void CrusherModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle:
     float level = GetParameterAsFloat(LEVEL);
     float cutoff = m_cutoffMin + GetParameterAsFloat(CUTOFF) * (m_cutoffMax - m_cutoffMin);
     float bits = (float)GetParameterAsBinnedValue(BITS);
-    float t = GetParameterAsFloat(RATE);     // 0..1
+    volatile float t = GetParameterAsFloat(RATE);     // 0..1
     float rate = m_rateMin * powf(m_rateMax / m_rateMin, t);
     float jitter = GetParameterAsFloat(JITTER);
 

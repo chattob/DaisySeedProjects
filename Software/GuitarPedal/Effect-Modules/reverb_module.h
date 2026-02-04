@@ -28,6 +28,7 @@ class ReverbModule : public BaseEffectModule {
     void Init(float sample_rate) override;
     void ProcessMono(float in) override;
     void ProcessStereo(float inL, float inR) override;
+    void AlternateFootswitchPressed() override;
     float GetBrightnessForLED(int led_id) const override;
 
   private:
@@ -36,6 +37,7 @@ class ReverbModule : public BaseEffectModule {
     float m_timeMax;
     float m_lpFreqMin;
     float m_lpFreqMax;
+    bool freeze_ = false;
 };
 } // namespace bkshepherd
 #endif

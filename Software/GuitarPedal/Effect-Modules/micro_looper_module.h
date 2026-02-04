@@ -17,7 +17,9 @@ static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 8192;
 
-static constexpr size_t kMicroLoopMaxSize = 16384 * 6;
+static constexpr size_t kMicroLoopSliceDiv = 8;
+static constexpr float kMicroLoopMinSlice = 1.0f / static_cast<float>(kMicroLoopSliceDiv);
+static constexpr size_t kMicroLoopMaxSize = 16384 * kMicroLoopSliceDiv;
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
 
@@ -65,15 +67,11 @@ class MicroLooperModule : public BaseEffectModule
     static float DSY_SDRAM_BSS stretched_buffer_b_[kMicroLoopMaxStretchedSize];
 
     // Recording state
-    bool midi_sync_ = false;
     bool armed_recording_ = false;
     bool armed_stop_ = false;
-    bool clock_beat_ = false;
     bool is_recording_ = false;
     bool is_playing_ = false;
-    bool first_layer_ = true;
     size_t loop_length_ = 0;
-    size_t mod_ = kMicroLoopMaxSize;
 
     bool freeze_playing_ = true;
     bool loop_playing_ = true;
@@ -84,7 +82,6 @@ class MicroLooperModule : public BaseEffectModule
     uint32_t samples_since_speed_change_ = 0;
 
     PlayingHead playing_head_;
-    PlayingHead recording_head_;
     size_t prev_wraparound_count_ = 0;
 
     float GetNextMarkovSpeed();
@@ -97,6 +94,8 @@ class MicroLooperModule : public BaseEffectModule
     bool is_stretching_ = false;
     bool streaming_stretch_ = false;   // True when stretching while still recording
     bool use_stretched_buffer_ = false;
+    float stretch_slice_ = 1.0f;       // Latched slice for stretched buffer generation
+    size_t stretch_source_wrap_length_ = 0; // Actual loop length used for wrapping reads
     size_t stretch_read_pos_ = 0;      // Position in source buffer_
     size_t stretch_write_pos_ = 0;     // Position in stretched_buffer_
     size_t stretch_total_frames_ = 0;

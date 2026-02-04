@@ -33,7 +33,7 @@ class Bitcrusher {
     // downsample ratios and smooth transitions when modulating the rate
     // (e.g., from a pitch detector). Each sample, we accumulate targetRate.
     // When it exceeds sampleRate, we grab and crush a new sample.
-    // Jitter adds randomization to the hold time threshold.
+    // Jitter adds randomization to the hold time.
     float Process(float in) {
         phaseAccum += targetRate;
         phaseAccum += jitterAmount * rng.randSigned() * targetRate;

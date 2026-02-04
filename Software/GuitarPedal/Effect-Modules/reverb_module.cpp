@@ -60,11 +60,15 @@ void ReverbModule::ProcessMono(float in) {
 
     if (m_isEnabled) {
         float sendl, sendr, wetl, wetr; // Reverb Inputs/Outputs
-        sendl = m_audioLeft;
-        sendr = m_audioRight;
+        sendl = freeze_ ? 0.0f : m_audioLeft;
+        sendr = freeze_ ? 0.0f : m_audioRight;
 
         // Calculate the effect
-        m_reverbStereo->SetFeedback(m_timeMin + GetParameterAsFloat(0) * (m_timeMax - m_timeMin));
+        float feedback = m_timeMin + GetParameterAsFloat(TIME) * (m_timeMax - m_timeMin);
+        if (freeze_) {
+            feedback = 1.0f;
+        }
+        m_reverbStereo->SetFeedback(feedback);
         float invertedFreq = 1.0 - GetParameterAsFloat(DAMP); // Invert the damping param so that knob left is less dampening, knob right is more dampening
         invertedFreq = invertedFreq * invertedFreq; // also square it for exponential taper (more control over lower frequencies)
         m_reverbStereo->SetLpFreq(m_lpFreqMin + invertedFreq * (m_lpFreqMax - m_lpFreqMin));
@@ -81,19 +85,34 @@ void ReverbModule::ProcessStereo(float inL, float inR) {
 
     if (m_isEnabled) {
         float sendl, sendr, wetl, wetr; // Reverb Inputs/Outputs
-        sendl = m_audioLeft;
-        sendr = m_audioRight;
+        sendl = freeze_ ? 0.0f : m_audioLeft;
+        sendr = freeze_ ? 0.0f : m_audioRight;
 
         // Calculate the effect
-        m_reverbStereo->SetFeedback(m_timeMin + GetParameterAsFloat(TIME) * (m_timeMax - m_timeMin));
+        float feedback = m_timeMin + GetParameterAsFloat(TIME) * (m_timeMax - m_timeMin);
+        float mix = GetParameterAsFloat(MIX);
+        float level = 1.0f;
+        if (freeze_) {
+            feedback = 1.0f;
+            mix = 0.5f;
+            level = 2.0f;
+        }
+        m_reverbStereo->SetFeedback(feedback);
         float invertedFreq = 1.0 - GetParameterAsFloat(DAMP); // Invert the damping param so that knob left is less dampening, knob right is more dampening
         invertedFreq = invertedFreq * invertedFreq; // also square it for exponential taper (more control over lower frequencies)
         m_reverbStereo->SetLpFreq(m_lpFreqMin + invertedFreq * (m_lpFreqMax - m_lpFreqMin));
 
         m_reverbStereo->Process(sendl, sendr, &wetl, &wetr);
-        m_audioLeft = wetl * GetParameterAsFloat(MIX) + inL * (1.0 - GetParameterAsFloat(MIX));
-        m_audioRight = wetr * GetParameterAsFloat(MIX) + inR * (1.0 - GetParameterAsFloat(MIX));
+        m_audioLeft = wetl * mix + inL * (1.0 - mix);
+        m_audioRight = wetr * mix + inR * (1.0 - mix);
+
+        m_audioLeft  *= level;
+        m_audioRight *= level;
     }
+}
+
+void ReverbModule::AlternateFootswitchPressed() {
+    freeze_ = !freeze_;
 }
 
 float ReverbModule::GetBrightnessForLED(int led_id) const {
