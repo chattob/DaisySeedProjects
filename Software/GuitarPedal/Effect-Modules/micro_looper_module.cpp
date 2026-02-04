@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include "../Util/audio_utilities.h"
+#include "../Util/XorShift32.h"
 
 using namespace bkshepherd;
 
@@ -33,24 +34,6 @@ constexpr size_t kStretchFadeInSamples = 24000;
 constexpr size_t kStretchMinPlayLength = H_OUT * 2;
 constexpr size_t kStretchMinPingPongLength = H_OUT * 4;
 constexpr float kStretchSwapFadeSeconds = 0.12f;
-
-// RNG for phase randomization
-struct XorShift32 {
-    uint32_t state = 0x12345678u;
-
-    inline uint32_t nextU32() {
-        uint32_t x = state;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        state = x;
-        return x;
-    }
-
-    inline float randSigned() {
-        return ((nextU32() >> 8) * (1.0f / 8388608.0f)) - 1.0f;
-    }
-};
 
 // ============================================================
 // STATIC BUFFERS - SDRAM for large ones
@@ -344,7 +327,7 @@ void MicroLooperModule::AlternateFootswitchPressed() {
 void MicroLooperModule::FootswitchPressed(size_t footswitch_id) {
     switch (footswitch_id) {
         case 2:
-            speed_error_ = true;
+            //speed_error_ = true;
             break;
         case 3:
             break;
@@ -357,7 +340,7 @@ void MicroLooperModule::FootswitchPressed(size_t footswitch_id) {
 void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
     switch (footswitch_id) {
         case 2:
-            speed_error_ = false;
+            //speed_error_ = false;
             break;
         case 3:
             break;
@@ -636,177 +619,181 @@ float MicroLooperModule::GetNextMarkovSpeed() {
 
 void MicroLooperModule::ProcessStereo(float inL, float inR)
 {
-    m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
-    float slice = GetParameterAsFloat(SLICE);
-    auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
-    int mode = GetParameterAsBinnedValue(LOOP_MODE);
-    float loop_mix = loop_playing_ ? gains.dry : 0.0f;
-    float freeze_mix = freeze_playing_ ? gains.wet : 0.0f;
+    BaseEffectModule::ProcessStereo(inL, inR);
 
-    if (mode == SAMPLER) {
-        // Envelope follower + auto-start logic (runs every sample)
-        float x = 0.5f * (fabsf(inL) + fabsf(inR));
-        UpdateEnv(x);
-        AutoStartLogic();
-    }
+    if (m_isEnabled) {
+        m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
+        float slice = GetParameterAsFloat(SLICE);
+        auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
+        int mode = GetParameterAsBinnedValue(LOOP_MODE);
+        float loop_mix = loop_playing_ ? gains.dry : 0.0f;
+        float freeze_mix = freeze_playing_ ? gains.wet : 0.0f;
 
-    // Write to buffer BEFORE updating recording head position
-    if (is_recording_) {
-        WriteBuffer(inL);
-        if (!is_stretching_ && loop_length_ >= N && mode == SAMPLER) {
-            StartStretching();
+        if (mode == SAMPLER) {
+            // Envelope follower + auto-start logic (runs every sample)
+            float x = 0.5f * (fabsf(inL) + fabsf(inR));
+            UpdateEnv(x);
+            AutoStartLogic();
         }
-    }
 
-    if (is_playing_ && mod_ > 0) {
-        // Read position BEFORE updating
-        float playing_head_position_f = playing_head_.GetHeadPosition();
-        size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
-
-        if (use_stretched_buffer_) {
-            // Get length from active buffer
-            size_t stretch_len;
-            size_t stretch_start = 0;
-            bool normalized;
-            if (active_stretch_buffer_) {
-                stretch_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
-                                  ? stretched_play_length_b_
-                                  : stretched_ready_length_b_;
-                stretch_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
-                                    ? stretched_play_start_b_
-                                    : 0;
-                normalized = stretched_buffer_normalized_b_;
-            } else {
-                stretch_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
-                                  ? stretched_play_length_a_
-                                  : stretched_ready_length_a_;
-                stretch_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
-                                    ? stretched_play_start_a_
-                                    : 0;
-                normalized = stretched_buffer_normalized_a_;
-            }
-
-            if (stretch_len > 0) {
-                // Read position BEFORE updating
-                float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
-                size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
-                if (stretch_playing_head_position >= stretch_len) {
-                    stretch_playing_head_position %= stretch_len;
-                }
-
-                size_t stretch_idx = stretch_start + stretch_playing_head_position;
-                float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
-                if (stretch_swap_fade_count_ > 0 && stretch_swap_fade_samples_ > 0) {
-                    size_t prev_len = 0;
-                    size_t prev_start = 0;
-                    if (stretch_swap_prev_buffer_) {
-                        prev_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
-                                       ? stretched_play_length_b_
-                                       : stretched_ready_length_b_;
-                        prev_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
-                                         ? stretched_play_start_b_
-                                         : 0;
-                    } else {
-                        prev_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
-                                       ? stretched_play_length_a_
-                                       : stretched_ready_length_a_;
-                        prev_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
-                                         ? stretched_play_start_a_
-                                         : 0;
-                    }
-
-                    if (prev_len > 0) {
-                        size_t prev_pos = stretch_playing_head_position;
-                        if (prev_pos >= prev_len) {
-                            prev_pos %= prev_len;
-                        }
-                        size_t prev_idx = prev_start + prev_pos;
-                        float prev_sample = stretch_swap_prev_buffer_
-                                                ? stretched_buffer_b_[prev_idx]
-                                                : stretched_buffer_a_[prev_idx];
-                        float t = (stretch_swap_fade_samples_ - stretch_swap_fade_count_)
-                                  / static_cast<float>(stretch_swap_fade_samples_);
-                        float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
-                        stretch_sample = prev_sample * (1.0f - w) + stretch_sample * w;
-                        stretch_swap_fade_count_--;
-                    } else {
-                        stretch_swap_fade_count_ = 0;
-                    }
-                }
-                if (stretch_declick_count_ > 0) {
-                    float t = 1.0f - (stretch_declick_count_ / static_cast<float>(kStretchDeclickSamples));
-                    float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
-                    stretch_sample = stretch_declick_prev_ * (1.0f - w) + stretch_sample * w;
-                    stretch_declick_count_--;
-                }
-                if (stretch_fade_in_count_ > 0) {
-                    size_t fade_in_samples = 1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
-                    float t = (fade_in_samples - stretch_fade_in_count_)
-                              / static_cast<float>(fade_in_samples);
-                    stretch_sample *= t;
-                    stretch_fade_in_count_--;
-                }
-                m_audioLeft += stretch_sample * freeze_mix;
-
-                bool bounced = false;
-                if (true && stretch_len >= kStretchMinPingPongLength) {
-                    bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
-                } else {
-                    stretch_playing_head_.UpdatePosition(stretch_len);
-                }
-                if (bounced) {
-                    stretch_declick_count_ = kStretchDeclickSamples;
-                    stretch_declick_prev_ = stretch_sample;
-                } else if (stretch_declick_count_ == 0) {
-                    stretch_declick_prev_ = stretch_sample;
-                }
-            }
-        }
-        m_audioLeft += buffer_[playing_head_position] * loop_mix;
-
-        // Update positions AFTER reading
-        size_t wraparound_count = playing_head_.GetWrapAroundCount();
-        playing_head_.UpdatePosition(mod_, slice);
-        float speed;
-
-        if (wraparound_count != playing_head_.GetWrapAroundCount()) {
-            if (speed_error_ && samples_since_speed_change_ >= mod_ / 4) {
-                target_speed_ = GetNextMarkovSpeed();
-                samples_since_speed_change_ = 0;
-            }
-        }
-        samples_since_speed_change_++;
-
-        if (speed_error_) {
-            // Low-pass filter for smooth speed transitions
-            smoothed_speed_ += 0.002f * (target_speed_ - smoothed_speed_);
-            speed = smoothed_speed_;
-        } else {
-            smoothed_speed_ = 1.0f;
-            speed = 1.0f;
-        }  
-        playing_head_.SetSpeed(speed);
-        stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
-
+        // Write to buffer BEFORE updating recording head position
         if (is_recording_) {
-            recording_head_.UpdatePosition(mod_);
-            wraparound_count = recording_head_.GetWrapAroundCount();
-            int mode = GetParameterAsBinnedValue(LOOP_MODE);
-            if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
-                armed_stop_ = true;
-                is_recording_ = false;
+            WriteBuffer(inL);
+            if (!is_stretching_ && loop_length_ >= N && mode == SAMPLER) {
+                StartStretching();
             }
-            prev_wraparound_count_ = wraparound_count;
-        } else {
-            size_t wraparound_count = playing_head_.GetWrapAroundCount();
-            if (wraparound_count > prev_wraparound_count_) {
-
-            }
-            prev_wraparound_count_ = wraparound_count;
         }
-    }
 
-    m_audioRight = m_audioLeft;
+        if (is_playing_ && mod_ > 0) {
+            // Read position BEFORE updating
+            float playing_head_position_f = playing_head_.GetHeadPosition();
+            size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
+
+            if (use_stretched_buffer_) {
+                // Get length from active buffer
+                size_t stretch_len;
+                size_t stretch_start = 0;
+                bool normalized;
+                if (active_stretch_buffer_) {
+                    stretch_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                    ? stretched_play_length_b_
+                                    : stretched_ready_length_b_;
+                    stretch_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                        ? stretched_play_start_b_
+                                        : 0;
+                    normalized = stretched_buffer_normalized_b_;
+                } else {
+                    stretch_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                    ? stretched_play_length_a_
+                                    : stretched_ready_length_a_;
+                    stretch_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                        ? stretched_play_start_a_
+                                        : 0;
+                    normalized = stretched_buffer_normalized_a_;
+                }
+
+                if (stretch_len > 0) {
+                    // Read position BEFORE updating
+                    float stretch_playing_head_position_f = stretch_playing_head_.GetHeadPosition();
+                    size_t stretch_playing_head_position = static_cast<size_t>(stretch_playing_head_position_f);
+                    if (stretch_playing_head_position >= stretch_len) {
+                        stretch_playing_head_position %= stretch_len;
+                    }
+
+                    size_t stretch_idx = stretch_start + stretch_playing_head_position;
+                    float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
+                    if (stretch_swap_fade_count_ > 0 && stretch_swap_fade_samples_ > 0) {
+                        size_t prev_len = 0;
+                        size_t prev_start = 0;
+                        if (stretch_swap_prev_buffer_) {
+                            prev_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                        ? stretched_play_length_b_
+                                        : stretched_ready_length_b_;
+                            prev_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
+                                            ? stretched_play_start_b_
+                                            : 0;
+                        } else {
+                            prev_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                        ? stretched_play_length_a_
+                                        : stretched_ready_length_a_;
+                            prev_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
+                                            ? stretched_play_start_a_
+                                            : 0;
+                        }
+
+                        if (prev_len > 0) {
+                            size_t prev_pos = stretch_playing_head_position;
+                            if (prev_pos >= prev_len) {
+                                prev_pos %= prev_len;
+                            }
+                            size_t prev_idx = prev_start + prev_pos;
+                            float prev_sample = stretch_swap_prev_buffer_
+                                                    ? stretched_buffer_b_[prev_idx]
+                                                    : stretched_buffer_a_[prev_idx];
+                            float t = (stretch_swap_fade_samples_ - stretch_swap_fade_count_)
+                                    / static_cast<float>(stretch_swap_fade_samples_);
+                            float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
+                            stretch_sample = prev_sample * (1.0f - w) + stretch_sample * w;
+                            stretch_swap_fade_count_--;
+                        } else {
+                            stretch_swap_fade_count_ = 0;
+                        }
+                    }
+                    if (stretch_declick_count_ > 0) {
+                        float t = 1.0f - (stretch_declick_count_ / static_cast<float>(kStretchDeclickSamples));
+                        float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
+                        stretch_sample = stretch_declick_prev_ * (1.0f - w) + stretch_sample * w;
+                        stretch_declick_count_--;
+                    }
+                    if (stretch_fade_in_count_ > 0) {
+                        size_t fade_in_samples = 1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                        float t = (fade_in_samples - stretch_fade_in_count_)
+                                / static_cast<float>(fade_in_samples);
+                        stretch_sample *= t;
+                        stretch_fade_in_count_--;
+                    }
+                    m_audioLeft += stretch_sample * freeze_mix;
+
+                    bool bounced = false;
+                    if (true && stretch_len >= kStretchMinPingPongLength) {
+                        bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                    } else {
+                        stretch_playing_head_.UpdatePosition(stretch_len);
+                    }
+                    if (bounced) {
+                        stretch_declick_count_ = kStretchDeclickSamples;
+                        stretch_declick_prev_ = stretch_sample;
+                    } else if (stretch_declick_count_ == 0) {
+                        stretch_declick_prev_ = stretch_sample;
+                    }
+                }
+            }
+            m_audioLeft += buffer_[playing_head_position] * loop_mix;
+
+            // Update positions AFTER reading
+            size_t wraparound_count = playing_head_.GetWrapAroundCount();
+            playing_head_.UpdatePosition(mod_, slice);
+            float speed;
+
+            if (wraparound_count != playing_head_.GetWrapAroundCount()) {
+                if (speed_error_ && samples_since_speed_change_ >= mod_ / 4) {
+                    target_speed_ = GetNextMarkovSpeed();
+                    samples_since_speed_change_ = 0;
+                }
+            }
+            samples_since_speed_change_++;
+
+            if (speed_error_) {
+                // Low-pass filter for smooth speed transitions
+                smoothed_speed_ += 0.002f * (target_speed_ - smoothed_speed_);
+                speed = smoothed_speed_;
+            } else {
+                smoothed_speed_ = 1.0f;
+                speed = 1.0f;
+            }  
+            playing_head_.SetSpeed(speed);
+            stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
+
+            if (is_recording_) {
+                recording_head_.UpdatePosition(mod_);
+                wraparound_count = recording_head_.GetWrapAroundCount();
+                int mode = GetParameterAsBinnedValue(LOOP_MODE);
+                if ((mode == SAMPLER) && (wraparound_count > prev_wraparound_count_)) {
+                    armed_stop_ = true;
+                    is_recording_ = false;
+                }
+                prev_wraparound_count_ = wraparound_count;
+            } else {
+                size_t wraparound_count = playing_head_.GetWrapAroundCount();
+                if (wraparound_count > prev_wraparound_count_) {
+
+                }
+                prev_wraparound_count_ = wraparound_count;
+            }
+        }
+
+        m_audioRight = m_audioLeft;
+    }
 }
 
 // ============================================================

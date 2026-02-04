@@ -1,8 +1,9 @@
 #include "filter_module.h"
+#include "../Util/audio_utilities.h"
 
 using namespace bkshepherd;
 
-static const int s_paramCount = 3;
+static const int s_paramCount = 5;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Cutoff",
@@ -13,11 +14,19 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         midiCCMapping : -1
     },
     {
+        name : "Resonance",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 0.0f}, // no resonance
+        knobMapping : 1,
+        midiCCMapping : -1
+    },
+    {
         name : "HP Mode",
         valueType : ParameterValueType::Bool,   // false = LP, true = HP
         valueBinCount : 0,
         defaultValue : {.uint_value = 0},       // default: LPF
-        knobMapping : 1,
+        knobMapping : 2,
         midiCCMapping : -1
     },
     {
@@ -25,7 +34,15 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
-        knobMapping : 2,
+        knobMapping : 3,
+        midiCCMapping : -1
+    },
+    {
+        name : "Mix",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 1.0f},
+        knobMapping : 4,
         midiCCMapping : -1
     }
 };
@@ -34,11 +51,12 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
 FilterModule::FilterModule()
 : BaseEffectModule()
 , cutoff_norm_(0.5f)
+, q_(0.707f)              // Butterworth (flat) response
 , hp_mode_(false)
 , cutoff_min_(60.0f)      // adjust to taste
 , cutoff_max_(8000.0f)    // adjust to taste
-, hp_filter_(cutoff_min_, 48000.0f)  // dummy init, will be reconfigured
-, lp_filter_(cutoff_max_, 48000.0f)
+, hp_filter_(cutoff_min_, 48000.0f, 0.707f)  // dummy init, will be reconfigured
+, lp_filter_(cutoff_max_, 48000.0f, 0.707f)
 {
     m_name          = "Filter";
     m_paramMetaData = s_metaData;
@@ -54,6 +72,9 @@ void FilterModule::Init(float sample_rate)
 
     // Read initial parameter values
     cutoff_norm_ = GetParameterAsFloat(CUTOFF);
+    // Map resonance 0..1 to Q range 0.5..20 (exponential for better control)
+    float res_norm = GetParameterAsFloat(RESONANCE);
+    q_ = 0.5f * std::pow(40.0f, res_norm);  // 0.5 to 20
     hp_mode_     = GetParameterAsBool(HP_MODE);
 
     UpdateFilters();
@@ -75,18 +96,25 @@ void FilterModule::UpdateFilters()
 
     const float sr = GetSampleRate();
 
-    hp_filter_.config(cutoff, sr);
-    lp_filter_.config(cutoff, sr);
+    hp_filter_.config(cutoff, sr, q_);
+    lp_filter_.config(cutoff, sr, q_);
 }
 
 void FilterModule::ParameterChanged(int parameter_id)
 {
-    if(parameter_id == 0)
+    if(parameter_id == CUTOFF)
     {
         cutoff_norm_ = GetParameterAsFloat(CUTOFF);
         UpdateFilters();
     }
-    else if(parameter_id == 1)
+    else if(parameter_id == RESONANCE)
+    {
+        // Map resonance 0..1 to Q range 0.5..20 (exponential for better control)
+        float res_norm = GetParameterAsFloat(RESONANCE);
+        q_ = 0.5f * std::pow(40.0f, res_norm);  // 0.5 to 20
+        UpdateFilters();
+    }
+    else if(parameter_id == HP_MODE)
     {
         hp_mode_ = GetParameterAsBool(HP_MODE);
         // No need to reconfig filters, only routing changes.
@@ -110,8 +138,11 @@ void FilterModule::ProcessMono(float in)
     else
         out = lp_filter_(in); // low-pass
 
+    float mix = GetParameterAsFloat(MIX);
+    auto gains = EnergyCrossfade(mix);
+
     // Mono effect: same on both channels
-    m_audioLeft  = GetParameterAsFloat(LEVEL) * out;
+    m_audioLeft  = GetParameterAsFloat(LEVEL) * (gains.wet * out + gains.dry * in);
     m_audioRight = m_audioLeft;
 }
 

@@ -14,8 +14,10 @@ class FilterModule : public BaseEffectModule
 
     enum Param {
         CUTOFF = 0,
+        RESONANCE,
         HP_MODE,
         LEVEL,
+        MIX,
         PARAM_COUNT
     };
 
@@ -31,13 +33,14 @@ class FilterModule : public BaseEffectModule
 
     // Parameters
     float cutoff_norm_;   // 0..1
+    float q_;             // resonance (0.5 to 20)
     bool  hp_mode_;       // false = LP, true = HP
 
     // Range for cutoff (Hz)
     float cutoff_min_;
     float cutoff_max_;
 
-    // Filters (mono)
+    // Filters (mono) - biquad with resonance
     cycfi::q::highpass hp_filter_;
     cycfi::q::lowpass  lp_filter_;
 };

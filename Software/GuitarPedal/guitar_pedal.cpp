@@ -9,6 +9,8 @@
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/crusher_module.h"
 #include "Effect-Modules/filter_module.h"
+#include "Effect-Modules/mixer_module.h"
+#include "Effect-Modules/reverb_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -25,7 +27,8 @@ CpuLoadMeter g_cpuLoadMeter;
 struct {
     std::vector<BaseEffectModule*> chain;
     MicroLooperModule* micro_looper = nullptr;
-    FilterModule* mixer = nullptr;
+    ReverbModule* reverb = nullptr;
+    MixerModule* mixer = nullptr;
     bool preFXmode = false;
 } g_effects;
 
@@ -207,6 +210,10 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTarget[1][i] = in[1][i];
     }
 
+    // Capture dry signal for mixer channel 1 (channel 0 auto-captures wet)
+    g_effects.mixer->ResetCaptures();
+    g_effects.mixer->CaptureChannel(1, in, size);
+
     if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
         for (auto* fx : g_effects.chain) {
             if (!fx) continue;
@@ -218,16 +225,6 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
             }
         }
     }
-
-    /*static float mixedInputBuffer[2][kBlockSize];   // actual audio data
-    static float* mixedInput[2] = { mixedInputBuffer[0], mixedInputBuffer[1] }; // pointers
-
-    g_effects.mixer->ProcessStereoBlock(in, mixedInput, size);
-
-    for (size_t i = 0; i < size; i++) {    
-        crossFadeTarget[0][i] += mixedInput[0][i];
-        crossFadeTarget[1][i] += mixedInput[1][i];
-    }*/
 
     for (size_t i = 0; i < size; i++) {
         if (g_crossfade.isCrossFading) {
@@ -310,12 +307,9 @@ int main(void) {
     auto polyoctave         = new PolyOctaveModule();
     auto delay              = new DelayModule();
     auto distortion         = new DistortionModule();
+    auto filter             = new FilterModule();
     auto crusher            = new CrusherModule();
-
-    g_effects.mixer = new FilterModule();
-    g_effects.mixer->Init(sample_rate);
-    g_effects.mixer->SetParameterAsBool(FilterModule::HP_MODE, false);
-    g_effects.mixer->SetParameterAsFloat(FilterModule::CUTOFF, 8000.0f);
+    g_effects.reverb        = new ReverbModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
@@ -338,19 +332,34 @@ int main(void) {
     crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.8f);
     crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
-    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.2f);
+    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.4f);
 
-    g_effects.chain.push_back(g_effects.micro_looper);
+    /*reverb->SetParameterAsBool(CloudSeedModule::STEREO_IN, false);
+    reverb->SetParameterAsBool(CloudSeedModule::SUM_TO_MONO, false);
+    reverb->SetParameterAsFloat(CloudSeedModule::MOD_AMOUNT, 0.0f);
+    reverb->SetParameterAsFloat(CloudSeedModule::MOD_RATE, 0.0f);*/
+    g_effects.reverb->SetParameterAsFloat(ReverbModule::MIX, 1.0f);
+    g_effects.reverb->SetParameterAsFloat(ReverbModule::DAMP, 1.0f);
+    //reverb->SetParameterAsFloat(CloudSeedModule::MOD_AMOUNT, 0.0f);
+
+    filter->SetParameterAsFloat(FilterModule::RESONANCE, 0.8f);
+
+    g_effects.mixer = new MixerModule();
+
+    //g_effects.chain.push_back(g_effects.micro_looper);
+    g_effects.chain.push_back(g_effects.reverb);
     g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(delay);
+    g_effects.chain.push_back(filter);
     g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
+    g_effects.chain.push_back(g_effects.mixer);  // Mixer last in chain
 
     for (auto* effect : g_effects.chain) {
         effect->Init(sample_rate);
         effect->SetEnabled(true);
     }
-    g_effects.mixer->SetEnabled(true);
+    g_effects.reverb->SetEnabled(false); // Reverb is only enabled in "Reverb" mode.
 
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
@@ -360,23 +369,26 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    //g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FREEZE_MIX});
+    //g_routing.knobs[0].push_back({g_effects.mixer, MixerModule::CH1_LEVEL});
+
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
-
-    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
+    g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
 
-    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::BALANCE});//, [](float x) { return 0.04f + 0.96f * x; }});
+    /*g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
+    g_routing.knobs[1].push_back({filter, FilterModule::RESONANCE});*/
 
-    /*g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
-    g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
-    g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
-*/
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
+
     g_routing.knobs[3].push_back({crusher, CrusherModule::JITTER});
+    g_routing.knobs[3].push_back({filter, FilterModule::CUTOFF, [](float x) { return 1.0f - x;}});
     
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
+    g_routing.knobs[5].push_back({filter, FilterModule::MIX, [](float x) { return x < 0.5f ? 0.0f : 1.0f; }});
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
     g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x * 1.2f + 0.4f; }});
 
@@ -386,8 +398,6 @@ int main(void) {
     // Alternate footswitch: toggle delay pressed & looper held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
-    g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Pressed});
-    g_routing.switches[2].push_back({g_effects.micro_looper, 2, SwitchAction::Released});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});
 
@@ -575,6 +585,35 @@ int main(void) {
             // Ensure the held-flag is cleared if user releases the button without any 'Released' route mapped
             // (keeps held-guard consistent even if no route calls reset it)
             if (switchReleased) {g_switches.heldFired[sw] = false;}
+
+            // Footswitch 2: Wet/Dry toggle
+            // CH1_LEVEL = channel 0 = wet (effect chain output)
+            // CH2_LEVEL = channel 1 = dry (original input)
+            switch (sw) {
+                case 2:
+                    if (switchPressed) {
+                        // Wet mode: wet signal only, mute dry
+                        g_effects.mixer->SetParameterAsFloat(MixerModule::CH1_LEVEL, 1.0f);  // wet on
+                        g_effects.mixer->SetParameterAsFloat(MixerModule::CH2_LEVEL, 0.0f);  // dry off
+                        g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 1.0f);
+                    }
+                    if (switchReleased) {
+                        // Dry mode: both signals at full, looper MIX = 0.0
+                        g_effects.mixer->SetParameterAsFloat(MixerModule::CH1_LEVEL, 1.0f);
+                        g_effects.mixer->SetParameterAsFloat(MixerModule::CH2_LEVEL, 1.0f);
+                        g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
+                    }
+                    break;
+                case 5:
+                    if (switchPressed) {
+                        g_effects.micro_looper->SetEnabled(false);
+                        g_effects.reverb->SetEnabled(true);
+                    }
+                    if (switchReleased) {
+                        g_effects.micro_looper->SetEnabled(true);
+                        g_effects.reverb->SetEnabled(false);
+                    }
+            }
 
             if (g_switches.enabledCache[sw] == true) {
                 g_switches.timeTilIdle[sw] -= elapsedTimeInSeconds;
