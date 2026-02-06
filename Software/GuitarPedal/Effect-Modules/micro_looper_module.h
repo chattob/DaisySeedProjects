@@ -38,6 +38,7 @@ class MicroLooperModule : public BaseEffectModule
       BALANCE,
       ATTACK,
       SENSITIVITY,
+      PITCH_VOICE,
       PARAM_COUNT
     };
 
@@ -94,7 +95,6 @@ class MicroLooperModule : public BaseEffectModule
 
     // Stretching state
     bool is_stretching_ = false;
-    bool streaming_stretch_ = false;   // True when stretching while still recording
     bool use_stretched_buffer_ = false;
     float stretch_slice_ = 1.0f;       // Latched slice for stretched buffer generation
     size_t stretch_source_wrap_length_ = 0; // Actual loop length used for wrapping reads
@@ -103,6 +103,7 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretch_total_frames_ = 0;
     size_t stretch_frames_done_ = 0;
     PlayingHead stretch_playing_head_;
+    PlayingHead stretch_harmony_head_;
     bool stretch_clear_pending_ = false;
     size_t stretch_clear_pos_ = 0;
     float stretch_speed_ = 1.0f;
@@ -126,6 +127,8 @@ class MicroLooperModule : public BaseEffectModule
     bool stretched_buffer_normalized_b_ = false;
     uint32_t stretch_declick_count_ = 0;
     float stretch_declick_prev_ = 0.0f;
+    uint32_t stretch_harmony_declick_count_ = 0;
+    float stretch_harmony_declick_prev_ = 0.0f;
     uint32_t stretch_fade_in_count_ = 0;
     size_t stretch_swap_fade_count_ = 0;
     size_t stretch_swap_fade_samples_ = 0;

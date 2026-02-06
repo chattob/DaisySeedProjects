@@ -19,7 +19,7 @@ static OctaveGenerator octave(sample_rate_temp / resample_factor); // resample_f
 static q::highshelf eq1(-11, 140_Hz, sample_rate_temp);
 static q::lowshelf eq2(5, 160_Hz, sample_rate_temp);
 
-static const int s_paramCount = 4;
+static constexpr int s_paramCount = PolyOctaveModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {name : "Dry", valueType : ParameterValueType::Float, defaultValue : {.float_value = 0.5f}, knobMapping : 0, midiCCMapping : 14},
     {

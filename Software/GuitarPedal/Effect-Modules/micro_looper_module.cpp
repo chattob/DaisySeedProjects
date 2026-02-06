@@ -175,7 +175,7 @@ static inline void UpdateStreamingPlayRange(const float* norm, size_t length,
 // ============================================================
 static const char *s_LoopModes[2] = {"Overdub", "Sampler"};
 
-static const int s_paramCount = 7;
+static constexpr int s_paramCount = MicroLooperModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Loop mode",
@@ -232,6 +232,14 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
         knobMapping : 3,
+        midiCCMapping : -1
+    },
+    {
+        name : "Pitch voice",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 0.5f},
+        knobMapping : 2,
         midiCCMapping : -1
     },
 };
@@ -378,7 +386,6 @@ void MicroLooperModule::ResetLoopState() {
 
 void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     is_stretching_      = false;
-    streaming_stretch_  = false;
     stretch_source_wrap_length_ = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
@@ -388,6 +395,8 @@ void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     stretch_clear_pos_ = 0;
     stretch_declick_count_ = 0;
     stretch_declick_prev_ = 0.0f;
+    stretch_harmony_declick_count_ = 0;
+    stretch_harmony_declick_prev_ = 0.0f;
     stretch_fade_in_count_ = 0;
     stretch_swap_fade_count_ = 0;
     stretch_swap_prev_buffer_ = false;
@@ -420,6 +429,7 @@ void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     stretched_buffer_normalized_b_ = false;
     stretch_speed_ = 1.0f;
     stretch_playing_head_.Reset();
+    stretch_harmony_head_.Reset();
 }
 
 void MicroLooperModule::ResetAutoStartCounters() {
@@ -559,7 +569,6 @@ void MicroLooperModule::StartStretching()
     }
 
     // Always use streaming mode now
-    streaming_stretch_ = true;
     stretch_read_pos_ = 0;
     stretch_write_pos_ = 0;
     stretch_frames_done_ = 0;
@@ -596,6 +605,7 @@ void MicroLooperModule::StartStretching()
     // Only reset playing head if we're not already using stretched buffer
     if (!use_stretched_buffer_) {
         stretch_playing_head_.Reset();
+        stretch_harmony_head_.Reset();
     }
     stretch_fade_in_count_ = 0;
 }
@@ -718,6 +728,14 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 
                     size_t stretch_idx = stretch_start + stretch_playing_head_position;
                     float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
+                    float stretch_harmony_head_position_f = stretch_harmony_head_.GetHeadPosition();
+                    size_t stretch_harmony_head_position = static_cast<size_t>(stretch_harmony_head_position_f);
+                    if (stretch_harmony_head_position >= stretch_len) {
+                        stretch_harmony_head_position %= stretch_len;
+                    }
+
+                    size_t stretch_harmony_idx = stretch_start + stretch_harmony_head_position;
+                    float stretch_harmony_sample = ReadStretchedSample(stretch_harmony_idx, normalized);
                     if (stretch_swap_fade_count_ > 0 && stretch_swap_fade_samples_ > 0) {
                         size_t prev_len = 0;
                         size_t prev_start = 0;
@@ -746,10 +764,19 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                             float prev_sample = stretch_swap_prev_buffer_
                                                     ? stretched_buffer_b_[prev_idx]
                                                     : stretched_buffer_a_[prev_idx];
+                            size_t prev_harmony_pos = stretch_harmony_head_position;
+                            if (prev_harmony_pos >= prev_len) {
+                                prev_harmony_pos %= prev_len;
+                            }
+                            size_t prev_harmony_idx = prev_start + prev_harmony_pos;
+                            float prev_harmony_sample = stretch_swap_prev_buffer_
+                                                            ? stretched_buffer_b_[prev_harmony_idx]
+                                                            : stretched_buffer_a_[prev_harmony_idx];
                             float t = (stretch_swap_fade_samples_ - stretch_swap_fade_count_)
                                     / static_cast<float>(stretch_swap_fade_samples_);
                             float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
                             stretch_sample = prev_sample * (1.0f - w) + stretch_sample * w;
+                            stretch_harmony_sample = prev_harmony_sample * (1.0f - w) + stretch_harmony_sample * w;
                             stretch_swap_fade_count_--;
                         } else {
                             stretch_swap_fade_count_ = 0;
@@ -761,14 +788,21 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                         stretch_sample = stretch_declick_prev_ * (1.0f - w) + stretch_sample * w;
                         stretch_declick_count_--;
                     }
+                    if (stretch_harmony_declick_count_ > 0) {
+                        float t = 1.0f - (stretch_harmony_declick_count_ / static_cast<float>(kStretchDeclickSamples));
+                        float w = 0.5f - 0.5f * cosf(static_cast<float>(M_PI) * t);
+                        stretch_harmony_sample = stretch_harmony_declick_prev_ * (1.0f - w) + stretch_harmony_sample * w;
+                        stretch_harmony_declick_count_--;
+                    }
                     if (stretch_fade_in_count_ > 0) {
                         size_t fade_in_samples = 1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
                         float t = (fade_in_samples - stretch_fade_in_count_)
                                 / static_cast<float>(fade_in_samples);
                         stretch_sample *= t;
+                        stretch_harmony_sample *= t;
                         stretch_fade_in_count_--;
                     }
-                    m_audioLeft += stretch_sample * freeze_mix;
+                    m_audioLeft += (stretch_sample + stretch_harmony_sample) * freeze_mix;
 
                     bool bounced = false;
                     if (true && stretch_len >= kStretchMinPingPongLength) {
@@ -781,6 +815,19 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                         stretch_declick_prev_ = stretch_sample;
                     } else if (stretch_declick_count_ == 0) {
                         stretch_declick_prev_ = stretch_sample;
+                    }
+
+                    bool harmony_bounced = false;
+                    if (true && stretch_len >= kStretchMinPingPongLength) {
+                        harmony_bounced = stretch_harmony_head_.UpdatePositionPingPong(stretch_len);
+                    } else {
+                        stretch_harmony_head_.UpdatePosition(stretch_len);
+                    }
+                    if (harmony_bounced) {
+                        stretch_harmony_declick_count_ = kStretchDeclickSamples;
+                        stretch_harmony_declick_prev_ = stretch_harmony_sample;
+                    } else if (stretch_harmony_declick_count_ == 0) {
+                        stretch_harmony_declick_prev_ = stretch_harmony_sample;
                     }
                 }
             }
@@ -808,7 +855,19 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 speed = 1.0f;
             }  
             playing_head_.SetSpeed(speed);
+            float pitch_ratio = 1.0f;
+            if (use_stretched_buffer_) {
+                float pitch_voice = GetParameterAsFloat(PITCH_VOICE);
+                if (pitch_voice < 0.0f) {
+                    pitch_voice = 0.0f;
+                } else if (pitch_voice > 1.0f) {
+                    pitch_voice = 1.0f;
+                }
+                float pitch_octaves = (pitch_voice * 2.0f) - 1.0f;
+                pitch_ratio = powf(2.0f, pitch_octaves);
+            }
             stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
+            stretch_harmony_head_.SetSpeed(fabs(speed) * stretch_speed_ * pitch_ratio);
 
             // Check for wraparound (used for armed stop + SAMPLER auto-stop)
             wraparound_count = playing_head_.GetWrapAroundCount();
@@ -1137,7 +1196,6 @@ bool MicroLooperModule::Poll() {
                 }
 
                 is_stretching_ = false;
-                streaming_stretch_ = false;
                 s_stretch_state = StretchState::IDLE;
                 break;
             }

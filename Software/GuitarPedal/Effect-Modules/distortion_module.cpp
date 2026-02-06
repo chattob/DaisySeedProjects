@@ -10,7 +10,7 @@ cycfi::q::highpass preFilter(preFilterCutoffBase, 48000); // Dummy values that g
 cycfi::q::lowpass postFilter(postFilterCutoff, 48000);    // Dummy values that get overwritten in Init
 cycfi::q::lowpass upsamplingLowpassFilter(0.0f, 48000);   // Dummy values that get overwritten in Init
 
-static const int s_paramCount = 7;
+static constexpr int s_paramCount = DistortionModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Level",

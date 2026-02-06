@@ -10,6 +10,7 @@
 #include "Effect-Modules/crusher_module.h"
 #include "Effect-Modules/mixer_module.h"
 #include "Effect-Modules/reverb_module.h"
+#include "Effect-Modules/pitch_shifter_module.h"
 #include "Util/audio_utilities.h"
 #include <vector>
 
@@ -308,6 +309,7 @@ int main(void) {
     auto distortion         = new DistortionModule();
     auto crusher            = new CrusherModule();
     g_effects.reverb        = new ReverbModule();
+    auto pitchshifter       = new PitchShifterModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
@@ -344,7 +346,7 @@ int main(void) {
 
     g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(g_effects.reverb);
-    g_effects.chain.push_back(polyoctave);
+    g_effects.chain.push_back(pitchshifter);
     g_effects.chain.push_back(delay);
     g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
@@ -373,9 +375,10 @@ int main(void) {
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/kMicroLoopSliceDiv + x * (kMicroLoopSliceDiv - 1.0f)/kMicroLoopSliceDiv; }});
 
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    /*g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});*/
+    g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_VOICE});
     
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});

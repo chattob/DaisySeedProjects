@@ -38,7 +38,7 @@ public:
     };
 
 private:
-    static const int s_paramCount = PARAM_COUNT;
+    static constexpr int s_paramCount = PARAM_COUNT;
     static const ParameterMetaData s_metaData[s_paramCount];
 
     float m_bufferL[NUM_CHANNELS][MAX_BLOCK_SIZE];

@@ -17,8 +17,7 @@ DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevLeft;
 DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevRight;
 DelayLine<float, MAX_DELAY_SPREAD> DSY_SDRAM_BSS delayLineSpread;
 
-static const int s_paramCount =
-    12; // TODO: TEST STARTING WITH THE EXTREMES OF ALL PARAMETERS (high and low, this is where errors tend to occur)
+static constexpr int s_paramCount = DelayModule::PARAM_COUNT; // TODO: TEST STARTING WITH THE EXTREMES OF ALL PARAMETERS (high and low, this is where errors tend to occur)
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Delay Time",

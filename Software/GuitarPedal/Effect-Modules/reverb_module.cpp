@@ -2,7 +2,7 @@
 
 using namespace bkshepherd;
 
-static const int s_paramCount = 3;
+static constexpr int s_paramCount = ReverbModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {{
                                                                name : "Time",
                                                                valueType : ParameterValueType::Float,

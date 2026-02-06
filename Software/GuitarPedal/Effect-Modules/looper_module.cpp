@@ -4,7 +4,7 @@ using namespace bkshepherd;
 
 float DSY_SDRAM_BSS LooperModule::buffer_[kNumLayers][kMaxBufferSize];
 
-static const int s_paramCount = 5;
+static constexpr int s_paramCount = LooperModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Layer",

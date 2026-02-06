@@ -3,7 +3,7 @@
 
 using namespace bkshepherd;
 
-static const int s_paramCount = 6;
+static constexpr int s_paramCount = CrusherModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {{
                                                                name : "Level",
                                                                valueType : ParameterValueType::Float,
