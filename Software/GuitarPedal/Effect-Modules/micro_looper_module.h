@@ -12,16 +12,17 @@ namespace bkshepherd
 // ============================================================
 static constexpr size_t N = 16384;          // FFT size
 static constexpr size_t H_IN = N / 8;      // Input hop (analysis)
-static constexpr size_t STRETCH = 20;       // Stretch factor
+static constexpr size_t STRETCH = 8;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
 static constexpr size_t kStretchClearChunk = 8192;
 
-static constexpr size_t kMicroLoopSliceDiv = 8;
-static constexpr float kMicroLoopMinSlice = 1.0f / static_cast<float>(kMicroLoopSliceDiv);
-static constexpr size_t kMicroLoopMaxSize = 16384 * kMicroLoopSliceDiv;
+static constexpr float kMicroLoopSliceDiv = 6;
+static constexpr float kMicroLoopMinSlice = 1.0f / kMicroLoopSliceDiv;
+static constexpr size_t kMicroLoopMaxSize = 16384 * static_cast<size_t>(kMicroLoopSliceDiv);
+static_assert(kMicroLoopMaxSize >= N, "kMicroLoopMaxSize must be >= N");
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
-static constexpr size_t kMicroLoopMaxStretchedSize = ((STRETCH * kMicroLoopMaxSize) / H_OUT) * H_OUT;
+static constexpr size_t kMicroLoopMaxStretchedSize = (((kMicroLoopMaxSize - N) / H_IN) + 1) * STRETCH * H_OUT;
 
 class MicroLooperModule : public BaseEffectModule
 {
@@ -49,6 +50,7 @@ class MicroLooperModule : public BaseEffectModule
     void ProcessStereo(float inL, float inR) override;
     bool Poll() override;
     void BypassFootswitchPressed() override;
+    void AlternateFootswitchHeldFor1Second() override;
     void AlternateFootswitchPressed() override;
     void FootswitchPressed(size_t footswitch_id) override;
     void FootswitchReleased(size_t footswitch_id) override;

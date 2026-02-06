@@ -371,7 +371,7 @@ int main(void) {
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
-    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/8.0f + x * 7.0f/8.0f; }});
+    g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/kMicroLoopSliceDiv + x * (kMicroLoopSliceDiv - 1.0f)/kMicroLoopSliceDiv; }});
 
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
@@ -389,6 +389,7 @@ int main(void) {
     // Alternate footswitch: toggle delay pressed & looper held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});

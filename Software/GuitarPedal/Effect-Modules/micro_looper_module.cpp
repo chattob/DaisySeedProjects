@@ -308,6 +308,24 @@ void MicroLooperModule::BypassFootswitchPressed() {
     }
 }
 
+void MicroLooperModule::AlternateFootswitchHeldFor1Second() {
+    int mode = GetParameterAsBinnedValue(LOOP_MODE);
+    if (mode == OVERDUB) {
+        // Stop playback/recording and clear loop buffers for a clean restart.
+        armed_recording_ = false;
+        armed_stop_ = false;
+
+        ResetLoopState();
+
+        loop_playing_ = false;
+
+        env_ = 0.0f;
+        auto_armed_ = true;
+
+        std::memset(buffer_, 0, sizeof(buffer_));
+    }
+}
+
 void MicroLooperModule::AlternateFootswitchPressed() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
@@ -797,13 +815,18 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             if (is_recording_ && (wraparound_count > prev_wraparound_count_)) {
                 int mode = GetParameterAsBinnedValue(LOOP_MODE);
                     if (armed_stop_ || (mode == SAMPLER)) {
-                        loop_length_ = 0;
                         if (is_stretching_) {
                             size_t slice_length = static_cast<size_t>(stretch_slice_ * kMicroLoopMaxSize);
                             if (slice_length < N) {
                                 slice_length = N;
                             } else if (slice_length > kMicroLoopMaxSize) {
                                 slice_length = kMicroLoopMaxSize;
+                            }
+                            // If recording stopped early, cap the stretch source to actual data length.
+                            if (loop_length_ < slice_length) {
+                                stretch_source_wrap_length_ = loop_length_;
+                            } else {
+                                stretch_source_wrap_length_ = slice_length;
                             }
                         }
                         armed_stop_ = false;
@@ -953,14 +976,12 @@ bool MicroLooperModule::Poll() {
 
             case StretchState::CHECK_MORE_SYNTH:
                 if(s_synth_count < STRETCH) {
-                    // First input frame  stretched - switch to new buffer
-                    if (s_synth_count >= 6) {
-                        size_t ready_len = stretch_write_pos_;
-                        if (ready_len > (N - H_OUT)) {
-                            ready_len -= (N - H_OUT);
-                        } else {
-                            ready_len = 0;
-                        }
+                    // Switch once enough fully-overlapped samples exist (works even when STRETCH < 6).
+                    size_t ready_len = 0;
+                    if (stretch_write_pos_ > (N - H_OUT)) {
+                        ready_len = stretch_write_pos_ - (N - H_OUT);
+                    }
+                    if (ready_len > 0) {
                         if (write_stretch_buffer_) {
                             stretched_ready_length_b_ = ready_len;
                             UpdateStreamingPlayRange(s_stretch_norm_b, stretched_ready_length_b_,
@@ -1098,6 +1119,21 @@ bool MicroLooperModule::Poll() {
                     stretched_buffer_normalized_b_ = true;
                 } else {
                     stretched_buffer_normalized_a_ = true;
+                }
+
+                if (final_length > 0 && active_stretch_buffer_ != write_stretch_buffer_) {
+                    const bool was_using = use_stretched_buffer_;
+                    if (was_using) {
+                        stretch_swap_prev_buffer_ = active_stretch_buffer_;
+                        stretch_swap_fade_count_ = stretch_swap_fade_samples_;
+                        stretch_fade_in_count_ = 0;
+                    } else {
+                        stretch_swap_fade_count_ = 0;
+                        stretch_fade_in_count_ =
+                            1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                    }
+                    active_stretch_buffer_ = write_stretch_buffer_;
+                    use_stretched_buffer_ = true;
                 }
 
                 is_stretching_ = false;
