@@ -120,7 +120,7 @@ void LooperModule::AlternateFootswitchPressed(){
     modifier_on_ = !modifier_on_;
     if (!modifier_on_) {
         offset_ = 0.0f;
-        playing_head_.SyncTo(recording_head_);
+        playing_head_.SyncTo(recording_head_, mod, 0.0f);
     } else {
         offset_ = playing_head_.GetHeadPosition();
     }

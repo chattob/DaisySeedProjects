@@ -12,11 +12,14 @@ class PlayingHead {
         bool UpdatePositionPingPong(size_t loop_length);
         inline float GetHeadPosition() const {return head_position_f_;};
         inline uint16_t GetWrapAroundCount() const {return wrap_around_count_;};
-        bool SyncTo(const PlayingHead& target);
+        bool SyncTo(const PlayingHead& target, size_t loop_length, float sync_samples = 0.0f);
 
     private:
         float head_position_f_ = 0.0f;
         float speed_ = 1.0f;
         uint16_t wrap_around_count_ = 0;
         float pingpong_dir_ = 1.0f;
+        float sync_scale_ = 0.0f;
+        uint32_t sync_total_ = 0;
+        uint32_t sync_remaining_ = 0;
 };

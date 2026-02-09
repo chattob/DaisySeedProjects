@@ -1,15 +1,15 @@
 #include "pitch_shifter_module.h"
 
 #include <algorithm>
+#include <cmath>
 
+#include "../Util/audio_utilities.h"
 #include "../Util/pitch_shifter.h"
-#include "daisysp.h"
 
 using namespace bkshepherd;
 
-static const char *s_semitoneBinNames[8] = {"1", "2", "3", "4", "5", "6", "7", "OCT"};
-static const char *s_directionBinNames[2] = {"DOWN", "UP"};
 static const char *s_modeBinNames[2] = {"LATCH", "MOMENT"};
+static constexpr int k_pitchShiftSteps = 13;
 
 // How many samples to delay to based on the "Delay" knob and parameter
 // when the time knob is set to max, this is used for the ramp up/down
@@ -28,16 +28,15 @@ const uint32_t k_maxSamplesDelayPitchShifter = 6000;
 static constexpr int s_paramCount = PitchShifterModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
     {
-        name : "Semitone",
-        valueType : ParameterValueType::Binned,
-        valueBinCount : 13,
-        valueBinNames : s_semitoneBinNames,
-        defaultValue : {.uint_value = 0},
+        name : "Pitch Shift",
+        valueType : ParameterValueType::Float,
+        valueBinCount : 0,
+        defaultValue : {.float_value = 0.0f},
         knobMapping : 0,
         midiCCMapping : -1
     },
     {
-        name : "Crossfade",
+        name : "Mix",
         valueType : ParameterValueType::Float,
         valueBinCount : 0,
         defaultValue : {.float_value = 1.0f},
@@ -46,9 +45,8 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     },
     {
         name : "Direction",
-        valueType : ParameterValueType::Binned,
-        valueBinCount : 2,
-        valueBinNames : s_directionBinNames,
+        valueType : ParameterValueType::Bool,
+        valueBinCount : 0,
         defaultValue : {.uint_value = 0},
         knobMapping : 2,
         midiCCMapping : -1
@@ -92,8 +90,6 @@ DSY_SDRAM_BSS float pitch_delay_buffer_a[k_maxSamplesDelayPitchShifter];
 DSY_SDRAM_BSS float pitch_delay_buffer_b[k_maxSamplesDelayPitchShifter];
 
 static daisysp_modified::PitchShifter pitchShifter;
-static daisysp::CrossFade pitchCrossfade;
-
 // Default Constructor
 PitchShifterModule::PitchShifterModule() : BaseEffectModule() {
     m_name = "Pitch";
@@ -109,15 +105,17 @@ PitchShifterModule::PitchShifterModule() : BaseEffectModule() {
 PitchShifterModule::~PitchShifterModule() {}
 
 void PitchShifterModule::ProcessSemitoneTargetChange() {
+    const float normalized = std::clamp(GetParameterAsFloat(PITCH_SHIFT), 0.0f, 1.0f);
+    const float maxSemitone = static_cast<float>(k_pitchShiftSteps - 1);
+    float semitone = normalized * maxSemitone;
     if (!m_smoothSemitone) {
-        m_semitoneContinuous = static_cast<float>(GetParameterAsBinnedValue(SEMITONE) - 1);
-    } else {
-        const int binCount = std::max(1, GetParameterBinCount(SEMITONE));
-        const float maxSemitone = static_cast<float>(binCount - 1);
-        m_semitoneContinuous = std::clamp(m_semitoneContinuous, 0.0f, maxSemitone);
+        // Quantize to the legacy 13-bin behavior (0..12).
+        semitone = std::floor(normalized * static_cast<float>(k_pitchShiftSteps));
+        if (semitone > maxSemitone) {
+            semitone = maxSemitone;
+        }
     }
-
-    m_semitoneTarget = m_semitoneContinuous;
+    m_semitoneTarget = semitone;
     if (m_directionDown) {
         m_semitoneTarget *= -1.0f;
     }
@@ -140,6 +138,13 @@ void PitchShifterModule::SetTranspose(float semitone) {
     pitchShifter.SetTransposition(semitone);
 }
 
+void PitchShifterModule::UpdateMixGains() {
+    m_mix = std::clamp(GetParameterAsFloat(MIX), 0.0f, 1.0f);
+    CrossfadeGains gains = EnergyCrossfade(m_mix);
+    m_mixWet = gains.wet;
+    m_mixDry = gains.dry;
+}
+
 void PitchShifterModule::Init(float sample_rate) {
     BaseEffectModule::Init(sample_rate);
 
@@ -148,17 +153,13 @@ void PitchShifterModule::Init(float sample_rate) {
     memset(pitch_delay_buffer_b, 0, sizeof(pitch_delay_buffer_b));
 
     pitchShifter.Init(sample_rate, pitch_delay_buffer_a, pitch_delay_buffer_b, k_maxSamplesDelayPitchShifter);
-
-    pitchCrossfade.Init(CROSSFADE_CPOW);
-    pitchCrossfade.SetPos(GetParameterAsFloat(CROSSFADE));
+    UpdateMixGains();
 
     m_latching = GetParameterAsBinnedValue(MODE) == 1;
 
-    m_directionDown = GetParameterAsBinnedValue(DIRECTION) == 1;
+    m_directionDown = !GetParameterAsBool(DIRECTION);
 
     m_smoothSemitone = GetParameterAsBool(SMOOTH);
-    m_semitoneContinuous = static_cast<float>(GetParameterAsBinnedValue(SEMITONE) - 1);
-    m_semitoneFromMagnitude = false;
 
     ProcessSemitoneTargetChange();
 
@@ -169,20 +170,16 @@ void PitchShifterModule::Init(float sample_rate) {
 }
 
 void PitchShifterModule::ParameterChanged(int parameter_id) {
-    if (parameter_id == SEMITONE || parameter_id == DIRECTION || parameter_id == SMOOTH) {
+    if (parameter_id == PITCH_SHIFT || parameter_id == DIRECTION || parameter_id == SMOOTH) {
         if (parameter_id == SMOOTH) {
             m_smoothSemitone = GetParameterAsBool(SMOOTH);
         }
-        if (parameter_id == SEMITONE && m_smoothSemitone && !m_semitoneFromMagnitude) {
-            m_semitoneContinuous = static_cast<float>(GetParameterAsBinnedValue(SEMITONE) - 1);
-        }
-        m_directionDown = GetParameterAsBinnedValue(DIRECTION) == 1;
+        m_directionDown = !GetParameterAsBool(DIRECTION);
 
         // Change semitone when semitone knob is turned or direction is changed
         ProcessSemitoneTargetChange();
-        m_semitoneFromMagnitude = false;
-    } else if (parameter_id == CROSSFADE) {
-        pitchCrossfade.SetPos(GetParameterAsFloat(CROSSFADE));
+    } else if (parameter_id == MIX) {
+        UpdateMixGains();
     } else if (parameter_id == MODE) {
         m_latching = GetParameterAsBinnedValue(MODE) == 1;
         if (!m_latching) {
@@ -197,38 +194,6 @@ void PitchShifterModule::ParameterChanged(int parameter_id) {
     // Parameters changed, reset the transposition target just in case (mostly
     // impacts momentary/latch and delay)
     SetTranspose(m_semitoneTarget);
-}
-
-void PitchShifterModule::SetParameterAsMagnitude(int parameter_id, float value) {
-    if (parameter_id == SEMITONE) {
-        const float clamped = std::clamp(value, 0.0f, 1.0f);
-        const int binCount = std::max(1, GetParameterBinCount(SEMITONE));
-        const float maxSemitone = static_cast<float>(binCount - 1);
-        m_semitoneContinuous = clamped * maxSemitone;
-
-        int currentBin = GetParameterAsBinnedValue(SEMITONE);
-        int mappedBin = currentBin;
-        if (value < 0.0f) {
-            mappedBin = 1;
-        } else if (value > 1.0f) {
-            mappedBin = binCount;
-        } else {
-            const int candidate = static_cast<int>(value * static_cast<float>(binCount) + 1);
-            if (candidate >= 1 && candidate <= binCount) {
-                mappedBin = candidate;
-            }
-        }
-        m_semitoneFromMagnitude = (mappedBin != currentBin);
-
-        if (m_smoothSemitone) {
-            ProcessSemitoneTargetChange();
-            if (m_latching) {
-                SetTranspose(m_semitoneTarget);
-            }
-        }
-    }
-
-    BaseEffectModule::SetParameterAsMagnitude(parameter_id, value);
 }
 
 /*void PitchShifterModule::AlternateFootswitchPressed() {
@@ -274,7 +239,7 @@ void PitchShifterModule::ProcessMono(float in) {
         // When in latching mode, just process the target semitone at all times
         // immediately
         float shifted = pitchShifter.Process(in);
-        out = pitchCrossfade.Process(in, shifted);
+        out = (in * m_mixDry) + (shifted * m_mixWet);
     } else {
         out = ProcessMomentaryMode(in);
     }
@@ -301,7 +266,7 @@ float PitchShifterModule::ProcessMomentaryMode(float in) {
         // Process the pitch shift for completely active to the target
         SetTranspose(semitone);
         float shifted = pitchShifter.Process(in);
-        float out = pitchCrossfade.Process(in, shifted);
+        float out = (in * m_mixDry) + (shifted * m_mixWet);
         return out;
     }
 
@@ -333,7 +298,7 @@ float PitchShifterModule::ProcessMomentaryMode(float in) {
     }
 
     float shifted = pitchShifter.Process(in);
-    float pitchOut = pitchCrossfade.Process(in, shifted);
+    float pitchOut = (in * m_mixDry) + (shifted * m_mixWet);
 
     // Increment the counter for the next pass
     if (m_sampleCounter < samplesToDelay) {

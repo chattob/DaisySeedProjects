@@ -1,9 +1,13 @@
 #include "playing_head.h"
+#include "audio_utilities.h"
 
 void PlayingHead::Reset() {
     head_position_f_ = 0.0f;
     wrap_around_count_ = 0;
     pingpong_dir_ = 1.0f;
+    sync_scale_ = 0.0f;
+    sync_total_ = 0;
+    sync_remaining_ = 0;
 }
 
 static inline float wrapf(float x, float L)
@@ -18,6 +22,15 @@ static inline float wrapf(float x, float L)
     return r;
 }
 
+static inline float wrap_pos(float x, float L)
+{
+    float r = std::fmod(x, L);
+    if (r < 0.0f) {
+        r += L;
+    }
+    return r;
+}
+
 void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_pos) {
     // When recording the first layer, if recording with negative speed, 
     // we still write the buffer in forward direction.
@@ -27,19 +40,28 @@ void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_po
     // Compute slice length
     float slice_length = static_cast<float>(loop_length) * slice;
 
+    float sync_offset = 0.0f;
+    if (sync_remaining_ > 0 && sync_total_ > 1) {
+        uint32_t idx = sync_total_ - sync_remaining_;
+        float t = static_cast<float>(idx) / static_cast<float>(sync_total_ - 1);
+        float w = HannWeight(t);
+        sync_offset = sync_scale_ * w;
+    }
+    float speed = speed_ + sync_offset;
+
     // Compute slice end
     float end_pos;
-    if (speed_ > 0.0f) {
+    if (speed > 0.0f) {
         end_pos = wrapf(start_pos + slice_length, static_cast<float>(loop_length));
     } else {
         end_pos = wrapf(start_pos - slice_length, static_cast<float>(loop_length));
     }
 
     // Advance playback head
-    head_position_f_ += speed_;
+    head_position_f_ += speed;
 
     // Forward playback
-    if (speed_ > 0.0f) {
+    if (speed > 0.0f) {
         if (start_pos < end_pos) {
             // contiguous slice
             if (head_position_f_ >= end_pos) {
@@ -59,7 +81,7 @@ void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_po
     }
 
     // Backward playback
-    else if (speed_ < 0.0f) {
+    else if (speed < 0.0f) {
         if (start_pos < end_pos) {
             // contiguous slice
             if (head_position_f_ < start_pos) {
@@ -78,6 +100,14 @@ void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_po
     }
 
     // (speed == 0) → head_position_f_ stays still
+
+    if (sync_remaining_ > 0) {
+        sync_remaining_--;
+        if (sync_remaining_ == 0) {
+            sync_scale_ = 0.0f;
+            sync_total_ = 0;
+        }
+    }
 }
 
 bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
@@ -85,13 +115,22 @@ bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
         head_position_f_ = 0.0f;
         return false;
     }
-    float step = std::fabs(speed_);
+    float sync_offset = 0.0f;
+    if (sync_remaining_ > 0 && sync_total_ > 1) {
+        uint32_t idx = sync_total_ - sync_remaining_;
+        float t = static_cast<float>(idx) / static_cast<float>(sync_total_ - 1);
+        float w = HannWeight(t);
+        sync_offset = sync_scale_ * w;
+    }
+    float speed = speed_ + sync_offset;
+    float step = std::fabs(speed);
     if (step == 0.0f) {
         return false;
     }
 
     float max_pos = static_cast<float>(loop_length - 1);
     float next = head_position_f_ + (step * pingpong_dir_);
+    bool bounced = false;
 
     if (pingpong_dir_ > 0.0f) {
         if (next > max_pos) {
@@ -99,7 +138,7 @@ bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
             head_position_f_ = max_pos - overshoot;
             pingpong_dir_ = -pingpong_dir_;
             wrap_around_count_++;
-            return true;
+            bounced = true;
         }
     } else {
         if (next < 0.0f) {
@@ -107,15 +146,79 @@ bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
             head_position_f_ = overshoot;
             pingpong_dir_ = -pingpong_dir_;
             wrap_around_count_++;
-            return true;
+            bounced = true;
         }
     }
 
-    head_position_f_ = next;
-    return false;
+    if (!bounced) {
+        head_position_f_ = next;
+    }
+    if (sync_remaining_ > 0) {
+        sync_remaining_--;
+        if (sync_remaining_ == 0) {
+            sync_scale_ = 0.0f;
+            sync_total_ = 0;
+        }
+    }
+    return bounced;
 }
 
-bool PlayingHead::SyncTo(const PlayingHead& target) {
-    head_position_f_ = target.head_position_f_;
+bool PlayingHead::SyncTo(const PlayingHead& target, size_t loop_length, float sync_samples) {
+    if (loop_length == 0 || sync_samples <= 0.0f) {
+        head_position_f_ = target.head_position_f_;
+        sync_scale_ = 0.0f;
+        sync_total_ = 0;
+        sync_remaining_ = 0;
+        return true;
+    }
+
+    if (sync_samples < 1.0f) {
+        head_position_f_ = target.head_position_f_;
+        sync_scale_ = 0.0f;
+        sync_total_ = 0;
+        sync_remaining_ = 0;
+        return true;
+    }
+
+    float loop_len_f = static_cast<float>(loop_length);
+    float current = wrap_pos(head_position_f_, loop_len_f);
+    float target_pos = wrap_pos(target.head_position_f_, loop_len_f);
+
+    float delta = target_pos - current;
+    if (delta > (loop_len_f * 0.5f)) {
+        delta -= loop_len_f;
+    } else if (delta < -(loop_len_f * 0.5f)) {
+        delta += loop_len_f;
+    }
+
+    uint32_t steps = static_cast<uint32_t>(std::ceil(sync_samples));
+    if (steps == 0) {
+        head_position_f_ = target.head_position_f_;
+        sync_scale_ = 0.0f;
+        sync_total_ = 0;
+        sync_remaining_ = 0;
+        return true;
+    }
+
+    head_position_f_ = current;
+    float sum_w = 0.0f;
+    if (steps > 1) {
+        for (uint32_t i = 0; i < steps; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(steps - 1);
+            sum_w += HannWeight(t);
+        }
+    }
+
+    if (sum_w <= 0.0f) {
+        head_position_f_ = target.head_position_f_;
+        sync_scale_ = 0.0f;
+        sync_total_ = 0;
+        sync_remaining_ = 0;
+        return true;
+    }
+
+    sync_scale_ = delta / sum_w;
+    sync_total_ = steps;
+    sync_remaining_ = steps;
     return true;
 }

@@ -39,6 +39,8 @@ class MicroLooperModule : public BaseEffectModule
       ATTACK,
       SENSITIVITY,
       PITCH_VOICE,
+      PITCH_MIX,
+      PITCH_DIRECTION,
       PARAM_COUNT
     };
 
@@ -51,6 +53,7 @@ class MicroLooperModule : public BaseEffectModule
     void ProcessStereo(float inL, float inR) override;
     bool Poll() override;
     void BypassFootswitchPressed() override;
+    void BypassFootswitchHeldFor1Second() override;
     void AlternateFootswitchHeldFor1Second() override;
     void AlternateFootswitchPressed() override;
     void FootswitchPressed(size_t footswitch_id) override;
@@ -59,8 +62,8 @@ class MicroLooperModule : public BaseEffectModule
     void ParameterChanged(int parameter_id) override;
 
   private:
-    void ResetBuffer();
-    void ResetLoopState();
+    void ResetStates(bool preserve_playheads = false);
+    void ResetLoopState(bool preserve_playheads = false);
     void ResetStretchState(bool preserve_playback);
     void ResetAutoStartCounters();
 
@@ -85,6 +88,7 @@ class MicroLooperModule : public BaseEffectModule
     uint32_t samples_since_speed_change_ = 0;
 
     PlayingHead playing_head_;
+    PlayingHead loop_harmony_head_;
     size_t prev_wraparound_count_ = 0;
 
     float GetNextMarkovSpeed();
@@ -164,6 +168,7 @@ class MicroLooperModule : public BaseEffectModule
     // Pre-computed sample counts (updated in Init)
     uint32_t start_hold_samps_ = 0;
     uint32_t rearm_samps_ = 0;
+    uint32_t harmony_sync_samples_ = 0;
 };
 
 } // namespace bkshepherd

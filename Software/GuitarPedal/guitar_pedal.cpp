@@ -28,6 +28,7 @@ struct {
     std::vector<BaseEffectModule*> chain;
     MicroLooperModule* micro_looper = nullptr;
     ReverbModule* reverb = nullptr;
+    PitchShifterModule* pitchshifter = nullptr;
     MixerModule* mixer = nullptr;
     bool preFXmode = false;
 } g_effects;
@@ -70,7 +71,7 @@ struct {
 struct {
     bool initialized = false;
     float deadZone = 0.05f;
-    float changeTolerance = 1.0f / 256.0f;
+    float changeTolerance = 1.0f / 1024.0f;
     float idleTimeInSeconds = 1.0f;
     volatile bool* cacheChanged = nullptr;
     float* cache = nullptr;
@@ -309,7 +310,7 @@ int main(void) {
     auto distortion         = new DistortionModule();
     auto crusher            = new CrusherModule();
     g_effects.reverb        = new ReverbModule();
-    auto pitchshifter       = new PitchShifterModule();
+    g_effects.pitchshifter  = new PitchShifterModule();
 
     // Fix some effect parameters
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
@@ -329,10 +330,12 @@ int main(void) {
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
     crusher->SetParameterAsBinnedValue(CrusherModule::BITS, 32);
-    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.7f);
+    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
     crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.2f);
+
+    g_effects.pitchshifter->SetParameterAsBool(PitchShifterModule::SMOOTH, true);
 
     /*reverb->SetParameterAsBool(CloudSeedModule::STEREO_IN, false);
     reverb->SetParameterAsBool(CloudSeedModule::SUM_TO_MONO, false);
@@ -344,11 +347,11 @@ int main(void) {
 
     g_effects.mixer = new MixerModule();
 
-    g_effects.chain.push_back(g_effects.micro_looper);
+    /*ck(g_effects.micro_looper);
     g_effects.chain.push_back(g_effects.reverb);
-    g_effects.chain.push_back(pitchshifter);
+    g_effects.chain.push_back(g_effects.pitchshifter);
     g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(distortion);
+    g_effects.chain.push_back(distortion);*/
     g_effects.chain.push_back(crusher);
     g_effects.chain.push_back(g_effects.mixer);  // Mixer last in chain
 
@@ -357,6 +360,7 @@ int main(void) {
         effect->SetEnabled(true);
     }
     g_effects.reverb->SetEnabled(false); // Reverb is only enabled in "Reverb" mode.
+    g_effects.pitchshifter->SetEnabled(false); // Pitchshifter is only enabled in "Reverb" mode.
 
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
@@ -366,26 +370,37 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    //g_routing.knobs[0].push_back({g_effects.mixer, MixerModule::CH1_LEVEL});
+    g_routing.knobs[0].push_back({crusher, CrusherModule::BITS});
+    g_routing.knobs[1].push_back({crusher, CrusherModule::RATE});
+    g_routing.knobs[2].push_back({crusher, CrusherModule::JITTER});
+    g_routing.knobs[3].push_back({crusher, CrusherModule::CUTOFF});
+    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});
+    g_routing.knobs[5].push_back({crusher, CrusherModule::DIFF});
 
+/*
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
-    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING, [](float x) { return 1.0f - x; }});
+    g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING});
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/kMicroLoopSliceDiv + x * (kMicroLoopSliceDiv - 1.0f)/kMicroLoopSliceDiv; }});
 
-    /*g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});*/
     g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_VOICE});
-    
+    g_routing.knobs[2].push_back({g_effects.pitchshifter, PitchShifterModule::DIRECTION, [](float x) { return x >= 0.5f ? 1.0f : 0.0f; }});
+    g_routing.knobs[2].push_back({g_effects.pitchshifter, PitchShifterModule::PITCH_SHIFT, [](float x) { return x >= 0.5f ? 2.0f * (x - 0.5f) : 2.0f * (0.5f - x); }});
+
+    g_routing.knobs[3].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_MIX});
+    g_routing.knobs[3].push_back({g_effects.pitchshifter, PitchShifterModule::MIX});
+
     g_routing.knobs[4].push_back({delay, DelayModule::MOD_AMPLITUDE});
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
-    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : x + 0.5f; }});
-
+    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 2.0f * x; }});
+*/
+ /*g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
+    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});*/
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
 
@@ -600,14 +615,24 @@ int main(void) {
                         g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
                     }
                     break;
+                case 3:
+                    if (switchPressed) {
+                        g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, false);
+                    }
+                    if (switchReleased) {
+                        g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, true);
+                    }
+                    break;
                 case 5:
                     if (switchPressed) {
                         g_effects.micro_looper->SetEnabled(false);
                         g_effects.reverb->SetEnabled(true);
+                        g_effects.pitchshifter->SetEnabled(true);
                     }
                     if (switchReleased) {
                         g_effects.micro_looper->SetEnabled(true);
                         g_effects.reverb->SetEnabled(false);
+                        g_effects.pitchshifter->SetEnabled(false);
                     }
                     break;
             }

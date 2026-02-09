@@ -17,8 +17,8 @@ class PitchShifterModule : public BaseEffectModule {
     ~PitchShifterModule();
 
     enum Param {
-        SEMITONE = 0,
-        CROSSFADE,
+        PITCH_SHIFT = 0,
+        MIX,
         DIRECTION,
         MODE,
         SHIFT,
@@ -31,7 +31,6 @@ class PitchShifterModule : public BaseEffectModule {
     void ProcessMono(float in) override;
     void ProcessStereo(float inL, float inR) override;
     void ParameterChanged(int parameter_id) override;
-    void SetParameterAsMagnitude(int parameter_id, float value) override;
 
     /*bool AlternateFootswitchForTempo() const override { return false; }
     void AlternateFootswitchPressed() override;
@@ -43,15 +42,17 @@ class PitchShifterModule : public BaseEffectModule {
     void SetTranspose(float semitone);
     float ProcessMomentaryMode(float in);
     void ProcessSemitoneTargetChange();
+    void UpdateMixGains();
 
     bool m_latching = true;
     bool m_directionDown = true;
     bool m_alternateFootswitchPressed = false;
     bool m_smoothSemitone = false;
-    bool m_semitoneFromMagnitude = false;
 
     float m_semitoneTarget = 0;
-    float m_semitoneContinuous = 0;
+    float m_mix = 1.0f;
+    float m_mixWet = 1.0f;
+    float m_mixDry = 0.0f;
 
     uint32_t m_sampleCounter = 0;
     uint32_t m_samplesToDelayShift = 0;

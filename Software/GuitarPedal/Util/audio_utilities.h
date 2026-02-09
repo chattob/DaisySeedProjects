@@ -3,6 +3,7 @@
 #define AUDIO_UTILITIES_H
 
 #include <stdint.h>
+#include <cmath>
 
 /**
  * \file audio_utilities.h
@@ -84,6 +85,16 @@ inline CrossfadeGains EnergyCrossfade(float mix)
     float D  = B + x2;
 
     return { C * C, D * D };
+}
+
+/**
+ * \brief Hann window value at normalized position t in [0, 1].
+ * \param t Normalized position in [0, 1].
+ * \return Hann window value.
+ */
+inline float HannWeight(float t)
+{
+    return 0.5f * (1.0f - cosf(2.0f * M_PI * t));
 }
 
 #endif // AUDIO_UTILITIES_H

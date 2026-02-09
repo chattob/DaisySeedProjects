@@ -116,11 +116,9 @@ void ReverbModule::AlternateFootswitchPressed() {
 }
 
 float ReverbModule::GetBrightnessForLED(int led_id) const {
-    float value = BaseEffectModule::GetBrightnessForLED(led_id);
-
     if (led_id == 1) {
-        return value;
+        return freeze_;
+    } else {
+        return 0.0f;
     }
-
-    return value;
 }
