@@ -36,8 +36,8 @@ constexpr size_t MAX_DELAY_SPREAD = static_cast<size_t>(4800.0f); //  50 ms for 
 struct delayRevOct {
     DelayLineRevOct<float, MAX_DELAY_NORM> *del;
     DelayLineReverse<float, MAX_DELAY_REV> *delreverse;
-    float currentDelay;
-    float delayTarget;
+    float currentDelay = 0.0f;
+    float delayTarget = 1.0f;
     float feedback = 0.0;
     float active = false;
     bool reverseMode = false;
@@ -94,8 +94,8 @@ struct delayRevOct {
 
 struct delay_spread {
     DelayLine<float, MAX_DELAY_SPREAD> *del;
-    float currentDelay;
-    float delayTarget;
+    float currentDelay = 0.0f;
+    float delayTarget = 1.0f;
     float active = false;
 
     float Process(float in) {
@@ -169,13 +169,15 @@ class DelayModule : public BaseEffectModule {
     float m_delaySpreadMin;
     float m_delaySpreadMax;
     float m_pdelRight_out;
-    float m_currentMod;
+    float m_currentModLeft;
+    float m_currentModRight;
 
     Oscillator modOsc;
     float m_modOscFreqMin;
     float m_modOscFreqMax;
 
-    TapeModulator modTape;
+    TapeModulator modTapeLeft;
+    TapeModulator modTapeRight;
 
     // Delays
     delayRevOct delayLeft;

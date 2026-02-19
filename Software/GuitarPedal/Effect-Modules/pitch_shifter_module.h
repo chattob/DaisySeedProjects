@@ -41,6 +41,7 @@ class PitchShifterModule : public BaseEffectModule {
   private:
     void SetTranspose(float semitone);
     float ProcessMomentaryMode(float in);
+    float GetMomentarySemitone();
     void ProcessSemitoneTargetChange();
     void UpdateMixGains();
 

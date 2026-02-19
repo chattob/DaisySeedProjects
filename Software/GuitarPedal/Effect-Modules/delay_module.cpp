@@ -125,7 +125,8 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
 // Default Constructor
 DelayModule::DelayModule()
     : BaseEffectModule(), m_delaylpFreqMin(300.0f), m_delaylpFreqMax(20000.0f), m_delaySamplesMin(2400.0f),
-      m_delaySamplesMax(192000.0f), m_delaySpreadMin(24.0f), m_delaySpreadMax(2400.0f), m_pdelRight_out(0.0), m_currentMod(1.0),
+      m_delaySamplesMax(192000.0f), m_delaySpreadMin(24.0f), m_delaySpreadMax(2400.0f), m_pdelRight_out(0.0),
+      m_currentModLeft(1.0f), m_currentModRight(1.0f),
       m_modOscFreqMin(0.0), m_modOscFreqMax(3.0), m_LEDValue(1.0f) {
     // Set the name of the effect
     m_name = "Delay";
@@ -158,6 +159,7 @@ void DelayModule::Init(float sample_rate) {
     delayLeft.del = &delayLineLeft;
     delayLeft.delreverse = &delayLineRevLeft;
     delayLeft.delayTarget = 24000; // in samples
+    delayLeft.currentDelay = delayLeft.delayTarget;
     delayLeft.feedback = 0.0;
     delayLeft.active = true; // Default to no delay
     delayLeft.toneOctLP.Init(sample_rate);
@@ -168,6 +170,7 @@ void DelayModule::Init(float sample_rate) {
     delayRight.del = &delayLineRight;
     delayRight.delreverse = &delayLineRevRight;
     delayRight.delayTarget = 24000; // in samples
+    delayRight.currentDelay = delayRight.delayTarget;
     delayRight.feedback = 0.0;
     delayRight.active = true; // Default to no
     delayRight.toneOctLP.Init(sample_rate);
@@ -176,6 +179,7 @@ void DelayModule::Init(float sample_rate) {
     delayLineSpread.Init();
     delaySpread.del = &delayLineSpread;
     delaySpread.delayTarget = 1500; // in samples
+    delaySpread.currentDelay = delaySpread.delayTarget;
     delaySpread.active = true;
 
     effect_samplerate = sample_rate;
@@ -187,7 +191,8 @@ void DelayModule::Init(float sample_rate) {
     modOsc.Init(sample_rate);
     modOsc.SetAmp(1.0);
 
-    modTape.Init(sample_rate);
+    modTapeLeft.Init(sample_rate);
+    modTapeRight.Init(sample_rate);
 
     auto gains = EnergyCrossfade(GetParameterAsFloat(2));
     delayWetMix = gains.wet;
@@ -229,11 +234,13 @@ void DelayModule::ProcessModulation(size_t size) {
     int waveForm = GetParameterAsBinnedValue(10) - 1;
     float wowDepth = 2.0f;
     float flutterDepth = 2.0f;
+
     if (waveForm == 5) {
         float freq = GetParameterAsFloat(8) * size;
         float wowRate = 0.2f + 2.0f * freq;
         float flutterRate = 2.0f + 5.0f * freq;
-        m_currentMod = modTape.GetTapeSpeed(wowRate, flutterRate, wowDepth, flutterDepth);
+        m_currentModLeft = modTapeLeft.GetTapeSpeed(wowRate, flutterRate, wowDepth, flutterDepth);
+        m_currentModRight = modTapeRight.GetTapeSpeed(wowRate, flutterRate, wowDepth, flutterDepth);
     } else {
         modOsc.SetWaveform(waveForm);
 
@@ -251,57 +258,73 @@ void DelayModule::ProcessModulation(size_t size) {
         }
 
         // Ease the effect value into it's target to avoid clipping with square or sawtooth waves
-        fonepole(m_currentMod, modOsc.Process(), .01f);
+        fonepole(m_currentModLeft, modOsc.Process(), .01f);
+        m_currentModRight = m_currentModLeft;
     }
-    float mod = m_currentMod;
+
+    float modLeft = m_currentModLeft;
+    float modRight = m_currentModRight;
     float mod_amount = GetParameterAsFloat(7);
 
     // {"None", "DelayTime", "DelayLevel", "Level", "DelayPan"};
     if (modParam == 1) {
-        float delayTarget;
         float timeParam = GetParameterAsFloat(DELAY_TIME);
         const float D_min = 1.0f; // minimum allowable delay time: 1 sample
+        const float depth = 500.0f;
+        float delayTargetLeft;
+        float delayTargetRight;
 
         if (waveForm == 5) {
             // Tape flutter mode with dynamic min
             const float M     = wowDepth + 0.2f * flutterDepth; // Max amplitude of tape modulation.
-            const float depth = 500.0f;
-
             float baseMin = D_min + M * mod_amount * depth;
             float baseMax = m_delaySamplesMax; // or some flutter-specific max
 
             float base = baseMin + (baseMax - baseMin) * timeParam;
 
-            delayTarget = base + mod * mod_amount * depth;
-        } else {            
-            delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
-            delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam + mod * mod_amount * 500;
-        }
-        if (delayTarget < D_min) {
-            delayTarget = D_min;
-        }
-        if (delayTarget > MAX_DELAY_NORM - 2) { 
-            delayTarget = MAX_DELAY_NORM - 2;
+            delayTargetLeft = base + modLeft * mod_amount * depth;
+            delayTargetRight = base + modRight * mod_amount * depth;
+        } else {
+            float base = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+            delayTargetLeft = base + modLeft * mod_amount * depth;
+            delayTargetRight = base + modRight * mod_amount * depth;
         }
 
-        delayLeft.delayTarget  = delayTarget;
-        delayRight.delayTarget = delayTarget;
+        if (delayTargetLeft < D_min) {
+            delayTargetLeft = D_min;
+        }
+        if (delayTargetLeft > MAX_DELAY_NORM - 2) {
+            delayTargetLeft = MAX_DELAY_NORM - 2;
+        }
+
+        if (delayTargetRight < D_min) {
+            delayTargetRight = D_min;
+        }
+        if (delayTargetRight > MAX_DELAY_NORM - 2) {
+            delayTargetRight = MAX_DELAY_NORM - 2;
+        }
+
+        delayLeft.delayTarget = delayTargetLeft;
+        delayRight.delayTarget = delayTargetRight;
     } else if (modParam == 2) {
-        float mod_level = mod * mod_amount + (1.0 - mod_amount);
-        delayLeft.level = mod_level;
-        delayRight.level = mod_level;
-        delayLeft.level_reverse = mod_level;
-        delayRight.level_reverse = mod_level;
+        float mod_level_left = modLeft * mod_amount + (1.0f - mod_amount);
+        float mod_level_right = modRight * mod_amount + (1.0f - mod_amount);
+        delayLeft.level = mod_level_left;
+        delayRight.level = mod_level_right;
+        delayLeft.level_reverse = mod_level_left;
+        delayRight.level_reverse = mod_level_right;
 
     } else if (modParam == 3) {
-        _level = mod * mod_amount + (1.0 - mod_amount);
+        float mod = 0.5f * (modLeft + modRight);
+        _level = mod * mod_amount + (1.0f - mod_amount);
 
     } else if (modParam == 4) {
-        float mod_level = mod * mod_amount + (1.0 - mod_amount);
-        delayLeft.level = mod_level;
-        delayRight.level = 1.0 - mod_level;
-        delayLeft.level_reverse = mod_level;
-        delayRight.level_reverse = 1.0 - mod_level;
+        float mod_left = modLeft * mod_amount + (1.0f - mod_amount);
+        float mod_right = modRight * mod_amount + (1.0f - mod_amount);
+        delayLeft.level = mod_left;
+        delayRight.level = 1.0f - mod_right;
+        delayLeft.level_reverse = mod_left;
+        delayRight.level_reverse = 1.0f - mod_right;
     }
 }
 

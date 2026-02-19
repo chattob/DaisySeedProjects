@@ -4,8 +4,6 @@
 
 #include <stdint.h>
 
-namespace bkshepherd {
-
 struct XorShift32 {
     uint32_t state = 0x12345678u;
 
@@ -18,11 +16,10 @@ struct XorShift32 {
         return x;
     }
 
-    inline float randSigned() {
-        return ((nextU32() >> 8) * (1.0f / 8388608.0f)) - 1.0f;
+    inline float randSigned(float lower, float upper) {
+        const float t = (nextU32() >> 8) * (1.0f / 16777216.0f); // [0, 1)
+        return lower + (upper - lower) * t;
     }
 };
-
-} // namespace bkshepherd
 
 #endif

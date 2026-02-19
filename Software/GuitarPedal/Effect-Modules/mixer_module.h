@@ -34,6 +34,7 @@ public:
         CH3_LEVEL,
         CH4_LEVEL,
         MASTER_LEVEL,
+        PAN,
         PARAM_COUNT
     };
 

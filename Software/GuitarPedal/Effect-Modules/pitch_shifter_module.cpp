@@ -86,10 +86,10 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     },
 };
 
-DSY_SDRAM_BSS float pitch_delay_buffer_a[k_maxSamplesDelayPitchShifter];
-DSY_SDRAM_BSS float pitch_delay_buffer_b[k_maxSamplesDelayPitchShifter];
+DSY_SDRAM_BSS float pitch_delay_buffer_a[2][k_maxSamplesDelayPitchShifter];
+DSY_SDRAM_BSS float pitch_delay_buffer_b[2][k_maxSamplesDelayPitchShifter];
 
-static daisysp_modified::PitchShifter pitchShifter;
+static daisysp_modified::PitchShifter pitchShifter[2];
 // Default Constructor
 PitchShifterModule::PitchShifterModule() : BaseEffectModule() {
     m_name = "Pitch";
@@ -133,9 +133,14 @@ void PitchShifterModule::SetTranspose(float semitone) {
         const uint32_t delaySize = std::lerp(k_defaultSamplesDelayPitchShifter, k_maxSamplesDelayPitchShifter, interpolateValue);
 
         // Set delay size clamping to the min/max that are possible
-        pitchShifter.SetDelSize(std::clamp(delaySize, k_defaultSamplesDelayPitchShifter, k_maxSamplesDelayPitchShifter));
+        uint32_t clampedDelaySize = std::clamp(delaySize, k_defaultSamplesDelayPitchShifter, k_maxSamplesDelayPitchShifter);
+        for (int ch = 0; ch < 2; ch++) {
+            pitchShifter[ch].SetDelSize(clampedDelaySize);
+        }
     }
-    pitchShifter.SetTransposition(semitone);
+    for (int ch = 0; ch < 2; ch++) {
+        pitchShifter[ch].SetTransposition(semitone);
+    }
 }
 
 void PitchShifterModule::UpdateMixGains() {
@@ -148,11 +153,12 @@ void PitchShifterModule::UpdateMixGains() {
 void PitchShifterModule::Init(float sample_rate) {
     BaseEffectModule::Init(sample_rate);
 
-    // clear and initialize SDRAM for pitch shift buffers
-    memset(pitch_delay_buffer_a, 0, sizeof(pitch_delay_buffer_a));
-    memset(pitch_delay_buffer_b, 0, sizeof(pitch_delay_buffer_b));
-
-    pitchShifter.Init(sample_rate, pitch_delay_buffer_a, pitch_delay_buffer_b, k_maxSamplesDelayPitchShifter);
+    // clear and initialize SDRAM for both stereo pitch shifters
+    for (int ch = 0; ch < 2; ch++) {
+        memset(pitch_delay_buffer_a[ch], 0, sizeof(pitch_delay_buffer_a[ch]));
+        memset(pitch_delay_buffer_b[ch], 0, sizeof(pitch_delay_buffer_b[ch]));
+        pitchShifter[ch].Init(sample_rate, pitch_delay_buffer_a[ch], pitch_delay_buffer_b[ch], k_maxSamplesDelayPitchShifter);
+    }
     UpdateMixGains();
 
     m_latching = GetParameterAsBinnedValue(MODE) == 1;
@@ -183,7 +189,9 @@ void PitchShifterModule::ParameterChanged(int parameter_id) {
     } else if (parameter_id == MODE) {
         m_latching = GetParameterAsBinnedValue(MODE) == 1;
         if (!m_latching) {
-            pitchShifter.SetDelSize(k_defaultSamplesDelayPitchShifter);
+            for (int ch = 0; ch < 2; ch++) {
+                pitchShifter[ch].SetDelSize(k_defaultSamplesDelayPitchShifter);
+            }
         }
     } else if (parameter_id == SHIFT) {
         m_samplesToDelayShift = static_cast<uint32_t>(static_cast<float>(k_maxSamplesMaxTime) * GetParameterAsFloat(SHIFT));
@@ -238,7 +246,7 @@ void PitchShifterModule::ProcessMono(float in) {
     if (m_latching) {
         // When in latching mode, just process the target semitone at all times
         // immediately
-        float shifted = pitchShifter.Process(in);
+        float shifted = pitchShifter[0].Process(in);
         out = (in * m_mixDry) + (shifted * m_mixWet);
     } else {
         out = ProcessMomentaryMode(in);
@@ -247,9 +255,25 @@ void PitchShifterModule::ProcessMono(float in) {
     m_audioRight = m_audioLeft = out;
 }
 
-void PitchShifterModule::ProcessStereo(float inL, float inR) { ProcessMono(inL); }
+void PitchShifterModule::ProcessStereo(float inL, float inR) {
+    if (m_latching) {
+        float shiftedL = pitchShifter[0].Process(inL);
+        float shiftedR = pitchShifter[1].Process(inR);
+        m_audioLeft = (inL * m_mixDry) + (shiftedL * m_mixWet);
+        m_audioRight = (inR * m_mixDry) + (shiftedR * m_mixWet);
+        return;
+    }
 
-float PitchShifterModule::ProcessMomentaryMode(float in) {
+    float semitone = GetMomentarySemitone();
+    SetTranspose(semitone);
+
+    float shiftedL = pitchShifter[0].Process(inL);
+    float shiftedR = pitchShifter[1].Process(inR);
+    m_audioLeft = (inL * m_mixDry) + (shiftedL * m_mixWet);
+    m_audioRight = (inR * m_mixDry) + (shiftedR * m_mixWet);
+}
+
+float PitchShifterModule::GetMomentarySemitone() {
     // ---- Process when NOT in a ramp up/ramp down state ----
     if (!m_transitioningShift && !m_transitioningReturn) {
         // Make sure the the sample counter is ready for the next ramp up/down
@@ -262,12 +286,7 @@ float PitchShifterModule::ProcessMomentaryMode(float in) {
             // Process the pitch shift for completely inactive (0)
             semitone = 0.0f;
         }
-
-        // Process the pitch shift for completely active to the target
-        SetTranspose(semitone);
-        float shifted = pitchShifter.Process(in);
-        float out = (in * m_mixDry) + (shifted * m_mixWet);
-        return out;
+        return semitone;
     }
 
     // ---- Process ramp up/ramp down transition ----
@@ -290,15 +309,13 @@ float PitchShifterModule::ProcessMomentaryMode(float in) {
         m_percentageTransitionComplete = 1.0f;
     }
 
+    float semitone = 0.0f;
     // Perform the pitch shift
     if (m_transitioningShift) {
-        SetTranspose(m_semitoneTarget * m_percentageTransitionComplete);
+        semitone = m_semitoneTarget * m_percentageTransitionComplete;
     } else if (m_transitioningReturn) {
-        SetTranspose(m_semitoneTarget * (1.0f - m_percentageTransitionComplete));
+        semitone = m_semitoneTarget * (1.0f - m_percentageTransitionComplete);
     }
-
-    float shifted = pitchShifter.Process(in);
-    float pitchOut = (in * m_mixDry) + (shifted * m_mixWet);
 
     // Increment the counter for the next pass
     if (m_sampleCounter < samplesToDelay) {
@@ -309,7 +326,15 @@ float PitchShifterModule::ProcessMomentaryMode(float in) {
         m_transitioningReturn = false;
     }
 
-    return pitchOut;
+    return semitone;
+}
+
+float PitchShifterModule::ProcessMomentaryMode(float in) {
+    float semitone = GetMomentarySemitone();
+    SetTranspose(semitone);
+    float shifted = pitchShifter[0].Process(in);
+    float out = (in * m_mixDry) + (shifted * m_mixWet);
+    return out;
 }
 
 void PitchShifterModule::DrawUI(OneBitGraphicsDisplay &display, int currentIndex, int numItemsTotal, Rectangle boundsToDrawIn,

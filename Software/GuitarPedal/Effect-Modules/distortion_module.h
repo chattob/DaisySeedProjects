@@ -49,10 +49,11 @@ class DistortionModule : public BaseEffectModule {
     float softClipping(float input, float gain);
     float fuzzEffect(float input, float intensity);
     float tubeSaturation(float input, float gain);
-    float multiStage(float sample);
+    float multiStage(float sample, float env);
     float dynamicPreFilterCutoff(float inputEnergy);
-    void processDistortion(float &sample, const int &clippingType, const float &intensity);
+    void processDistortion(float &sample, const int &clippingType, const float &intensity, float env);
     void normalizeVolume(float &sample, int clippingType);
+    float ProcessSample(float input, int clippingType, float intensity, int channel);
 
     float m_levelMin = 0.0f;
     float m_levelMax = 1.0f;
@@ -63,9 +64,9 @@ class DistortionModule : public BaseEffectModule {
     Tone m_tone;
 
     bool m_oversampling;
-    float m_os_buffer[oversamplingFactor];  // workspace for oversampling
-    float m_env = 0.0f;
-    float m_pre_cutoff = preFilterCutoffBase;
+    float m_os_buffer[2][oversamplingFactor];  // per-channel workspace for oversampling
+    float m_env[2] = {0.0f, 0.0f};
+    float m_pre_cutoff[2] = {preFilterCutoffBase, preFilterCutoffBase};
 };
 } // namespace bkshepherd
 #endif

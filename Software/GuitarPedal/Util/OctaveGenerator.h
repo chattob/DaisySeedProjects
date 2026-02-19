@@ -28,16 +28,26 @@ SOFTWARE.
 #include "BandShifter.h"
 
 #include <gcem.hpp>
+#include <vector>
 
 //=============================================================================
 class OctaveGenerator {
   public:
-    OctaveGenerator(float sample_rate) {
-        for (int i = 0; i < 80; ++i) {
+    OctaveGenerator() = default;
+
+    explicit OctaveGenerator(float sample_rate) { Init(sample_rate); }
+
+    void Init(float sample_rate) {
+        _shifters.clear();
+        _shifters.reserve(kNumBands);
+        for (int i = 0; i < kNumBands; ++i) {
             const auto center = centerFreq(i);
             const auto bw = bandwidth(i);
             _shifters.emplace_back(center, sample_rate, bw);
         }
+        _up1 = 0;
+        _down1 = 0;
+        _down2 = 0;
     }
 
     void update(float sample) {
@@ -60,6 +70,7 @@ class OctaveGenerator {
     float down2() const { return _down2; }
 
   private:
+    static constexpr int kNumBands = 80;
     static constexpr float centerFreq(const int n) { return 480 * gcem::pow(2.0f, (0.027f * n)) - 420; }
 
     static constexpr float bandwidth(const int n) {

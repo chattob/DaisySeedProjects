@@ -5,6 +5,8 @@
 #include "base_effect_module.h"
 #include "daisysp.h"
 #include "../Util/XorShift32.h"
+#include "../Util/OctaveGenerator.h"
+#include "../Util/Multirate.h"
 #include <q/fx/biquad.hpp>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -44,7 +46,7 @@ class Bitcrusher {
             heldSample = nearbyintf(in * quant) / quant;
 
             // schedule next update with jitter
-            float j = rng.randSigned(); // [-1, +1]
+            float j = rng.randSigned(-1.0f, 1.0f);
             float interval = base * (1.0f + 0.25f * jitterAmount * j);
 
             // clamp to avoid extremes
@@ -98,6 +100,8 @@ class CrusherModule : public BaseEffectModule {
       JITTER,
       CUTOFF,
       MIX,
+      FILTER_Q,
+      CRUNCH_SUB,
       PARAM_COUNT
     };
 
@@ -108,13 +112,21 @@ class CrusherModule : public BaseEffectModule {
   private:
     Bitcrusher m_bitcrusherL;
     Bitcrusher m_bitcrusherR;
+    OctaveGenerator m_octaveGen;
+    Decimator2 m_crunchDecimator;
+    Interpolator m_crunchInterpolator;
+    float m_crunchBuf[resample_factor];
+    float m_crunchUp[resample_factor];
+    int m_crunchIndex = 0;
 
     float m_rateMin;
     float m_rateMax;
     float m_cutoffMin;
     float m_cutoffMax;
+    float m_filterQMin;
+    float m_filterQMax;
 
-    cycfi::q::lowpass lp_filter_;
+    cycfi::q::lowpass m_lpFilter[2];
 };
 } // namespace bkshepherd
 #endif

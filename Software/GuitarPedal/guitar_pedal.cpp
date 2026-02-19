@@ -275,7 +275,7 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
         crossFadeTargetRight = crossFadeTarget[1][i];
 
         out[0][i] = g_crossfade.left.Process(crossFadeSourceLeft, crossFadeTargetLeft);
-        out[1][i] = g_crossfade.right.Process(crossFadeSourceRight, crossFadeTargetRight);  
+        out[1][i] = g_crossfade.right.Process(crossFadeSourceRight, crossFadeTargetRight);
     }
 
     // Handle LEDs
@@ -330,10 +330,11 @@ int main(void) {
     distortion->SetParameterAsBinnedValue(DistortionModule::DIST_TYPE, 5);
 
     crusher->SetParameterAsBinnedValue(CrusherModule::BITS, 32);
-    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 1.0f);
-    crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 1.0f);
+    crusher->SetParameterAsMagnitude(CrusherModule::MIX, 0.8f);
+    crusher->SetParameterAsMagnitude(CrusherModule::CUTOFF, 0.25f);
+    crusher->SetParameterAsMagnitude(CrusherModule::FILTER_Q, 0.2f);
     crusher->SetParameterAsMagnitude(CrusherModule::LEVEL, 1.0f);
-    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.2f);
+    crusher->SetParameterAsMagnitude(CrusherModule::JITTER, 0.4f);
 
     g_effects.pitchshifter->SetParameterAsBool(PitchShifterModule::SMOOTH, true);
 
@@ -347,12 +348,13 @@ int main(void) {
 
     g_effects.mixer = new MixerModule();
 
-    /*ck(g_effects.micro_looper);
+    g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(g_effects.reverb);
     g_effects.chain.push_back(g_effects.pitchshifter);
     g_effects.chain.push_back(delay);
-    g_effects.chain.push_back(distortion);*/
+    g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
+    //g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(g_effects.mixer);  // Mixer last in chain
 
     for (auto* effect : g_effects.chain) {
@@ -370,14 +372,15 @@ int main(void) {
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    g_routing.knobs[0].push_back({crusher, CrusherModule::BITS});
+    /*polyoctave->SetParameterAsMagnitude(PolyOctaveModule::UP_1_OCT, 0.0f);
+    polyoctave->SetParameterAsMagnitude(PolyOctaveModule::DOWN_2_OCT, 0.0f);
+    //g_routing.knobs[0].push_back({crusher, CrusherModule::CUTOFF});
     g_routing.knobs[1].push_back({crusher, CrusherModule::RATE});
     g_routing.knobs[2].push_back({crusher, CrusherModule::JITTER});
-    g_routing.knobs[3].push_back({crusher, CrusherModule::CUTOFF});
     g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});
-    g_routing.knobs[5].push_back({crusher, CrusherModule::DIFF});
+    g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT});*/
 
-/*
+
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING});
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
@@ -396,8 +399,8 @@ int main(void) {
     g_routing.knobs[4].push_back({delay, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
-    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 2.0f * x; }});
-*/
+    g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 0.5f + x; }});
+
  /*g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
     g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});*/
@@ -406,6 +409,7 @@ int main(void) {
 
     // Alternate footswitch: toggle delay pressed & looper held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
+    g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::Pressed});
@@ -545,6 +549,12 @@ int main(void) {
             bool switchPressed  = g_hardware.switches[sw].RisingEdge();
             bool switchReleased = g_hardware.switches[sw].FallingEdge();
             bool switchHeld  = g_hardware.switches[sw].TimeHeldMs() >= 1000.f;
+            bool isDoubleTapPress = false;
+
+            if (switchPressed && g_switches.enabledCache[sw] && g_switches.timeTilIdle[sw] > 0.0f) {
+                isDoubleTapPress = true;
+                g_switches.doubleEnabledCache[sw] = true;
+            }
 
             // Dispatch all routes for this switch //TODO: add safety in case r.effect is nullptr but keep it possible for PostPreFX select.
             for (const auto &r : g_routing.switches[sw]) {
@@ -555,7 +565,11 @@ int main(void) {
                             if (r.switchId == altSwitchID) {
                                 r.effect->AlternateFootswitchPressed();
                             } else if (r.switchId == bypassSwitchID) {
-                                r.effect->BypassFootswitchPressed();
+                                if (isDoubleTapPress) {
+                                    r.effect->BypassFootswitchDoubleTapped();
+                                } else {
+                                    r.effect->BypassFootswitchPressed();
+                                }
                             } else {
                                 r.effect->FootswitchPressed(r.switchId);
                             }
@@ -642,24 +656,22 @@ int main(void) {
 
                 if (g_switches.timeTilIdle[sw] <= 0) {
                     g_switches.enabledCache[sw] = false;
-
-                    if (g_switches.doubleEnabledCache[sw] != true) {
-                        // We can safely know this was only a single tap here.
-                    }
-
+                    g_switches.timeTilIdle[sw] = 0.0f;
                     g_switches.doubleEnabledCache[sw] = false;
                 }
             }
 
             if (switchPressed) {
-                // Note that switch is pressed and reset the IdleTimer for detecting double presses
-                g_switches.enabledCache[sw] = switchPressed;
-
-                if (g_switches.timeTilIdle[sw] > 0) {
-                    g_switches.doubleEnabledCache[sw] = true;
+                if (isDoubleTapPress) {
+                    // Consume the double tap so the next press starts a fresh tap window.
+                    g_switches.enabledCache[sw] = false;
+                    g_switches.timeTilIdle[sw] = 0.0f;
+                    g_switches.doubleEnabledCache[sw] = false;
+                } else {
+                    // Start (or restart) the single-tap window.
+                    g_switches.enabledCache[sw] = true;
+                    g_switches.timeTilIdle[sw] = g_switches.idleTimeInSeconds;
                 }
-
-                g_switches.timeTilIdle[sw] = g_switches.idleTimeInSeconds;
             }
         }
 

@@ -1,4 +1,5 @@
 #include "tape_modulator.h"
+#include "XorShift32.h"
 
 // Actual definitions of the static members
 uint8_t TapeModulator::perm_[512];
@@ -7,8 +8,12 @@ void TapeModulator::Init(float sample_rate) {
     for(int i = 0; i < 256; i++) {
         perm_[i] = perm_[i + 256] = p_[i];
     }
-    t_wow_ = 0.0f;
-    t_flutter_ = 0.0f;
+
+    static XorShift32 rng;
+    constexpr float kPhaseRange = 256.0f;
+
+    t_wow_ = rng.randSigned(0.0f, kPhaseRange);
+    t_flutter_ = rng.randSigned(0.0f, kPhaseRange);
     sample_rate_ = sample_rate;
 }
 

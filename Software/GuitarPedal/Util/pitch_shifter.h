@@ -14,22 +14,15 @@
 #include "RuntimeDelayLine.h"
 #include "Utility/dsp.h"
 #include "phasor.h"
+#include "XorShift32.h"
 
 using namespace daisysp;
 
 namespace daisysp_modified {
 
-static inline uint32_t hash_xs32(uint32_t x) {
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    return x;
-}
-
 inline uint32_t myrand() {
-    static uint32_t seed = 1;
-    seed = hash_xs32(seed);
-    return seed;
+    static XorShift32 rng;
+    return rng.nextU32();
 }
 
 /**  time-domain pitchshifter
@@ -48,7 +41,7 @@ where:
 solving for t = 12.0
 f = (12 - 1) * 48000 / delaySize;
 
-\todo - move hash_xs32 and myrand to dsp.h and give appropriate names
+\todo - move myrand to dsp.h and give appropriate names
 */
 class PitchShifter {
   public:

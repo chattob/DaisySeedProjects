@@ -6,9 +6,18 @@ using namespace bkshepherd;
 
 static const char *s_clippingOptions[6] = {"Hard Clip", "Soft Clip", "Fuzz", "Tube", "Multi Stage", "Diode Clip"};
 
-cycfi::q::highpass preFilter(preFilterCutoffBase, 48000); // Dummy values that get overwritten in Init
-cycfi::q::lowpass postFilter(postFilterCutoff, 48000);    // Dummy values that get overwritten in Init
-cycfi::q::lowpass upsamplingLowpassFilter(0.0f, 48000);   // Dummy values that get overwritten in Init
+cycfi::q::highpass preFilter[2] = {
+    cycfi::q::highpass(preFilterCutoffBase, 48000), // Dummy values that get overwritten in Init
+    cycfi::q::highpass(preFilterCutoffBase, 48000)
+};
+cycfi::q::lowpass postFilter[2] = {
+    cycfi::q::lowpass(postFilterCutoff, 48000), // Dummy values that get overwritten in Init
+    cycfi::q::lowpass(postFilterCutoff, 48000)
+};
+cycfi::q::lowpass upsamplingLowpassFilter[2] = {
+    cycfi::q::lowpass(0.0f, 48000), // Dummy values that get overwritten in Init
+    cycfi::q::lowpass(0.0f, 48000)
+};
 
 static constexpr int s_paramCount = DistortionModule::PARAM_COUNT;
 static const ParameterMetaData s_metaData[s_paramCount] = {
@@ -114,15 +123,17 @@ void DistortionModule::Init(float sample_rate) {
 }
 
 void DistortionModule::InitializeFilters() {
-    preFilter.config(preFilterCutoffBase, GetSampleRate());
+    for (int ch = 0; ch < 2; ch++) {
+        preFilter[ch].config(preFilterCutoffBase, GetSampleRate());
 
-    if (m_oversampling) {
-        postFilter.config(postFilterCutoff, GetSampleRate() * oversamplingFactor);
-    } else {
-        postFilter.config(postFilterCutoff, GetSampleRate());
+        if (m_oversampling) {
+            postFilter[ch].config(postFilterCutoff, GetSampleRate() * oversamplingFactor);
+        } else {
+            postFilter[ch].config(postFilterCutoff, GetSampleRate());
+        }
+
+        upsamplingLowpassFilter[ch].config(GetSampleRate() / (2.0f * static_cast<float>(oversamplingFactor)), GetSampleRate());
     }
-
-    upsamplingLowpassFilter.config(GetSampleRate() / (2.0f * static_cast<float>(oversamplingFactor)), GetSampleRate());
 }
 
 void DistortionModule::ParameterChanged(int parameter_id) {
@@ -180,7 +191,7 @@ float bell(float x, float minPos, float depth)
     return 1.0f - h * (1.0f - t * t);
 }
 
-float DistortionModule::multiStage(float sample) {
+float DistortionModule::multiStage(float sample, float env) {
     const float gain = GetParameterAsFloat(GAIN);
     const float g = m_gainMin + (gain * (m_gainMax - m_gainMin));
 
@@ -194,7 +205,6 @@ float DistortionModule::multiStage(float sample) {
     const float unity = 1.0f / (g * g * d1 * d2 * d3);
 
     // Envelope-based bias: no bias for very low levels
-    float env       = m_env;               // from existing envelope follower
     float env_norm  = env / 0.2f;          // 0.2 ≈ "pretty loud", tweak by ear
     env_norm        = std::clamp(env_norm, 0.0f, 1.0f);
 
@@ -220,7 +230,8 @@ float DistortionModule::dynamicPreFilterCutoff(float inputEnergy) {
 
 void DistortionModule::processDistortion(float &sample,           // Sample to process
                         const int &clippingType, // Clipping type
-                        const float &intensity  // Intensity
+                        const float &intensity, // Intensity
+                        float env
                         ) {
     switch (clippingType) {
     case 0: // Hard Clipping
@@ -233,7 +244,7 @@ void DistortionModule::processDistortion(float &sample,           // Sample to p
         sample = tubeSaturation(sample, intensity * 10.0f);
         break;
     case 4: // Multi-stage
-        sample = multiStage(sample);
+        sample = multiStage(sample, env);
         break;
     case 5: // Diode Clipping
         sample = hardClipping(sample, 1.0f - intensity);
@@ -263,6 +274,50 @@ void DistortionModule::normalizeVolume(float &sample, int clippingType) {
     }
 }
 
+float DistortionModule::ProcessSample(float input, int clippingType, float intensity, int channel) {
+    float distorted = input;
+
+    // Channel-specific envelope and cutoff tracking to avoid L/R crosstalk.
+    const float energy = std::abs(distorted);
+    m_env[channel] += 0.01f * (energy - m_env[channel]);
+
+    const float target_cutoff = dynamicPreFilterCutoff(m_env[channel]);
+    if (std::abs(target_cutoff - m_pre_cutoff[channel]) > 10.0f) {
+        m_pre_cutoff[channel] = target_cutoff;
+        preFilter[channel].config(m_pre_cutoff[channel], GetSampleRate());
+    }
+
+    distorted = preFilter[channel](distorted);
+
+    if (m_oversampling) {
+        // Zero-stuff oversampling of a single sample.
+        for (int j = 0; j < oversamplingFactor; ++j) {
+            float os_sample = (j == 0) ? distorted : 0.0f;
+
+            // Interpolate with low-pass.
+            os_sample = upsamplingLowpassFilter[channel](os_sample);
+
+            // Nonlinear + post-filter.
+            processDistortion(os_sample, clippingType, intensity, m_env[channel]);
+            os_sample = postFilter[channel](os_sample);
+
+            m_os_buffer[channel][j] = os_sample;
+        }
+
+        float acc = 0.0f;
+        for (int j = 0; j < oversamplingFactor; ++j) {
+            acc += m_os_buffer[channel][j];
+        }
+        distorted = acc / float(oversamplingFactor);
+    } else {
+        processDistortion(distorted, clippingType, intensity, m_env[channel]);
+        distorted = postFilter[channel](distorted);
+    }
+
+    normalizeVolume(distorted, clippingType);
+    return distorted;
+}
+
 void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     if (m_isEnabled) {
         const int clippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
@@ -275,51 +330,7 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
         const float b = sqrtf(mix);
 
         for (size_t i = 0; i < size; i++) {
-            float distorted = in[0][i];
-
-            // Apply high-pass filter to remove excessive low frequencies
-            const float energy = std::abs(distorted);
-            m_env += 0.01f * (energy - m_env); // simple envelope follower
-
-            const float target_cutoff = dynamicPreFilterCutoff(m_env);
-            if (std::abs(target_cutoff - m_pre_cutoff) > 10.0f)  // only if changed enough
-            {
-                m_pre_cutoff = target_cutoff;
-                preFilter.config(m_pre_cutoff, GetSampleRate());
-            }
-
-            distorted = preFilter(distorted);
-
-            if (m_oversampling) {
-                // zero-stuff oversampling of a single sample
-                for (int j = 0; j < oversamplingFactor; ++j)
-                {
-                    float os_sample = (j == 0) ? distorted : 0.0f;
-
-                    // interpolate with low-pass
-                    os_sample = upsamplingLowpassFilter(os_sample);
-
-                    // nonlinear + post-filter
-                    processDistortion(os_sample, clippingType, intensity);
-                    os_sample = postFilter(os_sample);
-
-                    m_os_buffer[j] = os_sample;
-                }
-
-                // simplest: take first sample, or better: average
-                float acc = 0.0f;
-                for (int j = 0; j < oversamplingFactor; ++j)
-                    acc += m_os_buffer[j];
-                distorted = acc / float(oversamplingFactor);
-            }
-            else
-            {
-                processDistortion(distorted, clippingType, intensity);
-                distorted = postFilter(distorted);
-            }
-
-            // Normalize the volume between the types of distortion
-            normalizeVolume(distorted, clippingType);
+            float distorted = ProcessSample(in[0][i], clippingType, intensity, 0);
 
             const float clean = in[0][i];
             const float wet   = distorted * level;
@@ -331,8 +342,34 @@ void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle
 }
 
 void DistortionModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    // Calculate the mono effect
-    ProcessMonoBlock(in, out, size);
+    if (m_isEnabled) {
+        const int clippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
+        const float intensity = GetParameterAsFloat(INTENSITY);
+        const float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
+        const float mix = GetParameterAsFloat(MIX);
+
+        // Constant-power crossfade.
+        const float a = sqrtf(1.0f - mix);
+        const float b = sqrtf(mix);
+
+        for (size_t i = 0; i < size; i++) {
+            float distortedL = ProcessSample(in[0][i], clippingType, intensity, 0);
+            float distortedR = ProcessSample(in[1][i], clippingType, intensity, 1);
+
+            const float cleanL = in[0][i];
+            const float cleanR = in[1][i];
+            const float wetL = distortedL * level;
+            const float wetR = distortedR * level;
+
+            out[0][i] = a * cleanL + b * wetL;
+            out[1][i] = a * cleanR + b * wetR;
+        }
+    } else {
+        for (size_t i = 0; i < size; i++) {
+            out[0][i] = in[0][i];
+            out[1][i] = in[1][i];
+        }
+    }
 }
 
 float DistortionModule::GetBrightnessForLED(int led_id) const {

@@ -322,6 +322,8 @@ class BaseEffectModule {
 
     /** Overridable callback when main footswitch is pressed */
     virtual void BypassFootswitchPressed();
+    /** Overridable callback when main footswitch is double-tapped */
+    virtual void BypassFootswitchDoubleTapped(){ BypassFootswitchPressed(); };
     /** Overridable callback when main footswitch is released */
     virtual void BypassFootswitchReleased(){};
     /** Overridable callback when main footswitch is held for 1 second */

@@ -68,6 +68,19 @@ const ParameterMetaData MixerModule::s_metaData[s_paramCount] = {
         maxValue: 1,
         fineStepSize: 0.01f
     },
+    {
+        name: "Pan",
+        valueType: ParameterValueType::Float,
+        valueCurve: ParameterValueCurve::Linear,
+        valueBinCount: 0,
+        valueBinNames: nullptr,
+        defaultValue: {.float_value = 0.5f},
+        knobMapping: -1,
+        midiCCMapping: -1,
+        minValue: 0,
+        maxValue: 1,
+        fineStepSize: 0.01f
+    },
 };
 
 MixerModule::MixerModule() : BaseEffectModule() {
@@ -114,6 +127,14 @@ void MixerModule::ProcessStereoBlock(AudioHandle::InputBuffer in,
         GetParameterAsFloat(CH4_LEVEL)
     };
     float master = GetParameterAsFloat(MASTER_LEVEL);
+    float pan = GetParameterAsFloat(PAN);
+    if (pan < 0.0f) {
+        pan = 0.0f;
+    } else if (pan > 1.0f) {
+        pan = 1.0f;
+    }
+    float panL = (pan <= 0.5f) ? 1.0f : 2.0f * (1.0f - pan);
+    float panR = (pan >= 0.5f) ? 1.0f : 2.0f * pan;
 
     for (size_t i = 0; i < size; i++) {
         float sumL = 0.0f;
@@ -126,7 +147,7 @@ void MixerModule::ProcessStereoBlock(AudioHandle::InputBuffer in,
             }
         }
 
-        out[0][i] = sumL * master;
-        out[1][i] = sumR * master;
+        out[0][i] = sumL * master * panL;
+        out[1][i] = sumR * master * panR;
     }
 }

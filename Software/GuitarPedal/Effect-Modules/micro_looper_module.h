@@ -53,6 +53,7 @@ class MicroLooperModule : public BaseEffectModule
     void ProcessStereo(float inL, float inR) override;
     bool Poll() override;
     void BypassFootswitchPressed() override;
+    void BypassFootswitchDoubleTapped() override;
     void BypassFootswitchHeldFor1Second() override;
     void AlternateFootswitchHeldFor1Second() override;
     void AlternateFootswitchPressed() override;
@@ -75,12 +76,14 @@ class MicroLooperModule : public BaseEffectModule
     // Recording state
     bool armed_recording_ = false;
     bool armed_stop_ = false;
+    bool armed_mute_on_wrap_ = false;
     bool is_recording_ = false;
-    bool is_playing_ = false;
+    bool loop_playing_ = false;
+    bool stretch_playing_ = false;
     size_t loop_length_ = 0;
 
-    bool freeze_playing_ = true;
-    bool loop_playing_ = true;
+    bool freeze_mute_ = false;
+    bool loop_mute_ = false;
 
     bool speed_error_ = false;
     float smoothed_speed_ = 1.0f;
@@ -95,12 +98,12 @@ class MicroLooperModule : public BaseEffectModule
 
     void WriteBuffer(float in);
     void StartStretching();
-    float ReadStretchedSample(size_t idx, bool normalized);
+    float ReadStretchedSample(size_t idx);
 
     // Stretching state
     bool is_stretching_ = false;
     bool use_stretched_buffer_ = false;
-    float stretch_slice_ = 1.0f;       // Latched slice for stretched buffer generation
+    float stretch_slice_ = 1.0f;       // Latched slice used for stretch source sizing
     size_t stretch_source_wrap_length_ = 0; // Actual loop length used for wrapping reads
     size_t stretch_read_pos_ = 0;      // Position in source buffer_
     size_t stretch_write_pos_ = 0;     // Position in stretched_buffer_

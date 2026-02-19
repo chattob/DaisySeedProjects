@@ -36,6 +36,48 @@ constexpr size_t kStretchMinPingPongLength = H_OUT * 4;
 constexpr float kStretchSwapFadeSeconds = 0.12f;
 constexpr float kLoopHarmonySyncMs = 1000.0f;
 
+static inline float Clamp01(float value) {
+    if (value < 0.0f) {
+        return 0.0f;
+    }
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+static inline size_t ComputeSliceLength(float slice) {
+    size_t slice_length = static_cast<size_t>(slice * kMicroLoopMaxSize);
+    if (slice_length < N) {
+        return N;
+    }
+    if (slice_length > kMicroLoopMaxSize) {
+        return kMicroLoopMaxSize;
+    }
+    return slice_length;
+}
+
+static inline size_t ComputeStretchSourceLength(float slice, size_t loop_length) {
+    size_t source_length = ComputeSliceLength(slice);
+    if (loop_length > 0 && loop_length < source_length) {
+        source_length = loop_length;
+    }
+    if (source_length < N) {
+        source_length = N;
+    }
+    return source_length;
+}
+
+static inline float ComputePitchRatio(float pitch_voice) {
+    float clamped_voice = Clamp01(pitch_voice);
+    float pitch_octaves = (clamped_voice * 2.0f) - 1.0f;
+    return powf(2.0f, pitch_octaves);
+}
+
+static inline size_t ComputeStretchFadeInSamples(float attack) {
+    return 1024 + static_cast<size_t>(attack * kStretchFadeInSamples);
+}
+
 // ============================================================
 // STATIC BUFFERS - SDRAM for large ones
 // ============================================================
@@ -338,38 +380,39 @@ void MicroLooperModule::Init(float sample_rate)
     auto_armed_ = true;
 }
 
-void MicroLooperModule::BypassFootswitchPressed() {
+void MicroLooperModule::AlternateFootswitchPressed() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
         if (!is_stretching_ && (loop_length_ >= N)) {
             StartStretching();
         }
-        freeze_playing_ = true;
+        freeze_mute_ = false;
     } else {
-        freeze_playing_ = !freeze_playing_;
+        freeze_mute_ = !freeze_mute_;
     }
 }
 
-void MicroLooperModule::BypassFootswitchHeldFor1Second() {
+void MicroLooperModule::AlternateFootswitchHeldFor1Second() {
     // Kill stretched playback and any in-progress stretching.
     ResetStretchState(false);
-    freeze_playing_ = false;
+    freeze_mute_ = true;
 }
 
-void MicroLooperModule::AlternateFootswitchHeldFor1Second() {
+void MicroLooperModule::BypassFootswitchHeldFor1Second() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
         // Stop playback/recording and clear loop buffers for a clean restart.
         armed_recording_ = false;
         armed_stop_ = false;
+        armed_mute_on_wrap_ = false;
 
         const bool keep_stretch_playing = use_stretched_buffer_;
         ResetLoopState();
         if (keep_stretch_playing) {
-            is_playing_ = true;
+            stretch_playing_ = true;
         }
 
-        loop_playing_ = false;
+        loop_mute_ = true;
 
         env_ = 0.0f;
         auto_armed_ = true;
@@ -378,7 +421,19 @@ void MicroLooperModule::AlternateFootswitchHeldFor1Second() {
     }
 }
 
-void MicroLooperModule::AlternateFootswitchPressed() {
+void MicroLooperModule::BypassFootswitchDoubleTapped() {
+    if (loop_playing_ || is_recording_) {
+        // Keep the loop audible until the current cycle boundary.
+        loop_mute_ = false;
+        armed_mute_on_wrap_ = true;
+    } else {
+        armed_mute_on_wrap_ = false;
+        loop_mute_ = true;
+    }
+}
+
+void MicroLooperModule::BypassFootswitchPressed() {
+    armed_mute_on_wrap_ = false;
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
          if (!is_recording_) {
@@ -386,9 +441,9 @@ void MicroLooperModule::AlternateFootswitchPressed() {
         } else {
             armed_stop_ = true;
         }
-        loop_playing_ = true;
+        loop_mute_ = false;
     } else {
-        loop_playing_ = !loop_playing_;
+        loop_mute_ = !loop_mute_;
     }
 }
 
@@ -419,9 +474,10 @@ void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
 }
 
 void MicroLooperModule::ResetLoopState(bool preserve_playheads) {
-    is_playing_         = false;
+    loop_playing_       = false;
     is_recording_       = false;
     loop_length_        = 0;
+    armed_mute_on_wrap_ = false;
 
     if (!preserve_playheads) {
         playing_head_.Reset();
@@ -435,6 +491,7 @@ void MicroLooperModule::ResetLoopState(bool preserve_playheads) {
 
 void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     is_stretching_      = false;
+    stretch_slice_      = 1.0f;
     stretch_source_wrap_length_ = 0;
     stretch_read_pos_   = 0;
     stretch_write_pos_  = 0;
@@ -461,6 +518,7 @@ void MicroLooperModule::ResetStretchState(bool preserve_playback) {
         return;
     }
 
+    stretch_playing_ = false;
     use_stretched_buffer_ = false;
     active_stretch_buffer_ = false;
     write_stretch_buffer_ = false;
@@ -509,8 +567,8 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     armed_stop_ = false;
 
     // Disable mode-specific playback toggles.
-    loop_playing_ = false;
-    freeze_playing_ = false;
+    loop_mute_ = true;
+    freeze_mute_ = true;
 
     // Reset speed modulation state.
     speed_error_ = false;
@@ -598,21 +656,16 @@ void MicroLooperModule::WriteBuffer(float in)
 
 void MicroLooperModule::StartStretching()
 {
-    // Calculate source length based on latched slice parameter
+    // Latch slice so source sizing stays stable during stretching.
     stretch_slice_ = GetParameterAsFloat(SLICE);
     if (stretch_slice_ < kMicroLoopMinSlice) {
         stretch_slice_ = kMicroLoopMinSlice;
     }
-    size_t slice_length = static_cast<size_t>(stretch_slice_ * kMicroLoopMaxSize);
-    if (slice_length < N) {
-        slice_length = N;
-    } else if (slice_length > kMicroLoopMaxSize) {
-        slice_length = kMicroLoopMaxSize;
-    }
-    stretch_source_wrap_length_ = slice_length;
+
+    stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
 
     // If we're currently recording, stop on the next wraparound so the
-    // stretcher can finalize once a full slice has been captured.
+    // stretcher can finalize once the loop length is fixed.
     if (is_recording_) {
         armed_stop_ = true;
     }
@@ -659,9 +712,7 @@ void MicroLooperModule::StartStretching()
     stretch_fade_in_count_ = 0;
 }
 
-float MicroLooperModule::ReadStretchedSample(size_t idx, bool normalized) {
-    // During streaming, avoid dividing by partial norm (can blow up at window edges).
-    (void)normalized;
+float MicroLooperModule::ReadStretchedSample(size_t idx) {
     // Read from the active buffer
     if (active_stretch_buffer_) {
         return MicroLooperModule::stretched_buffer_b_[idx];
@@ -720,8 +771,8 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         }
         auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
         int mode = GetParameterAsBinnedValue(LOOP_MODE);
-        float loop_mix = loop_playing_ ? gains.dry : 0.0f;
-        float freeze_mix = freeze_playing_ ? gains.wet : 0.0f;
+        float loop_mix = loop_mute_ ? 0.0f : gains.dry;
+        float freeze_mix = freeze_mute_ ? 0.0f : gains.wet;
         size_t loop_length = static_cast<size_t>(kMicroLoopMaxSize * slice);
 
         if (mode == SAMPLER) {
@@ -739,24 +790,15 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             }
         }
 
-        if (is_playing_) {
-            // Read position BEFORE updating
-            float playing_head_position_f = playing_head_.GetHeadPosition();
-            size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
-            float harmony_mix = GetParameterAsFloat(PITCH_MIX);
-            if (harmony_mix < 0.0f) {
-                harmony_mix = 0.0f;
-            } else if (harmony_mix > 1.0f) {
-                harmony_mix = 1.0f;
-            }
+        if (loop_playing_ || stretch_playing_) {
+            float harmony_mix = Clamp01(GetParameterAsFloat(PITCH_MIX));
             auto harmony_gains = EnergyCrossfade(harmony_mix);
             bool harmony_forward = GetParameterAsBool(PITCH_DIRECTION);
 
-            if (use_stretched_buffer_) {
+            if (stretch_playing_ && use_stretched_buffer_) {
                 // Get length from active buffer
                 size_t stretch_len;
                 size_t stretch_start = 0;
-                bool normalized;
                 if (active_stretch_buffer_) {
                     stretch_len = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
                                     ? stretched_play_length_b_
@@ -764,7 +806,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     stretch_start = (stretched_play_locked_b_ && stretched_play_length_b_ > 0)
                                         ? stretched_play_start_b_
                                         : 0;
-                    normalized = stretched_buffer_normalized_b_;
                 } else {
                     stretch_len = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
                                     ? stretched_play_length_a_
@@ -772,7 +813,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     stretch_start = (stretched_play_locked_a_ && stretched_play_length_a_ > 0)
                                         ? stretched_play_start_a_
                                         : 0;
-                    normalized = stretched_buffer_normalized_a_;
                 }
 
                 if (stretch_len > 0) {
@@ -784,7 +824,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     }
 
                     size_t stretch_idx = stretch_start + stretch_playing_head_position;
-                    float stretch_sample = ReadStretchedSample(stretch_idx, normalized);
+                    float stretch_sample = ReadStretchedSample(stretch_idx);
                     float stretch_harmony_head_position_f = stretch_harmony_head_.GetHeadPosition();
                     size_t stretch_harmony_head_position = static_cast<size_t>(stretch_harmony_head_position_f);
                     if (stretch_harmony_head_position >= stretch_len) {
@@ -792,7 +832,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     }
 
                     size_t stretch_harmony_idx = stretch_start + stretch_harmony_head_position;
-                    float stretch_harmony_sample = ReadStretchedSample(stretch_harmony_idx, normalized);
+                    float stretch_harmony_sample = ReadStretchedSample(stretch_harmony_idx);
                     if (stretch_swap_fade_count_ > 0 && stretch_swap_fade_samples_ > 0) {
                         size_t prev_len = 0;
                         size_t prev_start = 0;
@@ -852,7 +892,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                         stretch_harmony_declick_count_--;
                     }
                     if (stretch_fade_in_count_ > 0) {
-                        size_t fade_in_samples = 1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                        size_t fade_in_samples = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
                         float t = (fade_in_samples - stretch_fade_in_count_)
                                 / static_cast<float>(fade_in_samples);
                         stretch_sample *= t;
@@ -864,7 +904,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     m_audioLeft += stretch_mix_sample * freeze_mix;
 
                     bool bounced = false;
-                    if (true && stretch_len >= kStretchMinPingPongLength) {
+                    if (stretch_len >= kStretchMinPingPongLength) {
                         bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
                     } else {
                         stretch_playing_head_.UpdatePosition(stretch_len);
@@ -877,7 +917,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     }
 
                     bool harmony_bounced = false;
-                    if (true && stretch_len >= kStretchMinPingPongLength) {
+                    if (stretch_len >= kStretchMinPingPongLength) {
                         harmony_bounced = stretch_harmony_head_.UpdatePositionPingPong(stretch_len);
                     } else {
                         stretch_harmony_head_.UpdatePosition(stretch_len);
@@ -890,78 +930,74 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     }
                 }
             }
-            float loop_harmony_head_position_f = loop_harmony_head_.GetHeadPosition();
-            size_t loop_harmony_head_position = static_cast<size_t>(loop_harmony_head_position_f);
-            if (loop_harmony_head_position >= kMicroLoopMaxSize) {
-                loop_harmony_head_position %= kMicroLoopMaxSize;
-            }
-            float loop_harmony_sample = buffer_[loop_harmony_head_position];
-            float loop_mix_sample = (buffer_[playing_head_position] * harmony_gains.dry)
-                                  + (loop_harmony_sample * harmony_gains.wet);
-            m_audioLeft += loop_mix_sample * loop_mix;
-
-            // Update positions AFTER reading
-            size_t wraparound_count = playing_head_.GetWrapAroundCount();
-            playing_head_.UpdatePosition(kMicroLoopMaxSize, slice);
-            loop_harmony_head_.UpdatePosition(kMicroLoopMaxSize, slice);
-            float speed;
-
-            if (wraparound_count != playing_head_.GetWrapAroundCount()) {
-                if (speed_error_ && samples_since_speed_change_ >= loop_length / 4) {
-                    target_speed_ = GetNextMarkovSpeed();
-                    samples_since_speed_change_ = 0;
+            if (loop_playing_) {
+                // Read position BEFORE updating
+                float playing_head_position_f = playing_head_.GetHeadPosition();
+                size_t playing_head_position = static_cast<size_t>(playing_head_position_f);
+                float loop_harmony_head_position_f = loop_harmony_head_.GetHeadPosition();
+                size_t loop_harmony_head_position = static_cast<size_t>(loop_harmony_head_position_f);
+                if (loop_harmony_head_position >= kMicroLoopMaxSize) {
+                    loop_harmony_head_position %= kMicroLoopMaxSize;
                 }
-            }
-            samples_since_speed_change_++;
+                float loop_harmony_sample = buffer_[loop_harmony_head_position];
+                float loop_mix_sample = (buffer_[playing_head_position] * harmony_gains.dry)
+                                      + (loop_harmony_sample * harmony_gains.wet);
+                m_audioLeft += loop_mix_sample * loop_mix;
 
-            if (speed_error_) {
-                // Low-pass filter for smooth speed transitions
-                smoothed_speed_ += 0.002f * (target_speed_ - smoothed_speed_);
-                speed = smoothed_speed_;
-            } else {
-                smoothed_speed_ = 1.0f;
-                speed = 1.0f;
-            }  
-            playing_head_.SetSpeed(speed);
-            float pitch_ratio = 1.0f;
-            float pitch_voice = GetParameterAsFloat(PITCH_VOICE);
-            if (pitch_voice < 0.0f) {
-                pitch_voice = 0.0f;
-            } else if (pitch_voice > 1.0f) {
-                pitch_voice = 1.0f;
-            }
-            float pitch_octaves = (pitch_voice * 2.0f) - 1.0f;
-            pitch_ratio = powf(2.0f, pitch_octaves);
-            stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
-            stretch_harmony_head_.SetSpeed(fabs(speed) * stretch_speed_ * pitch_ratio);
-            float harmony_dir = harmony_forward ? 1.0f : -1.0f;
-            loop_harmony_head_.SetSpeed(harmony_dir * fabs(speed) * pitch_ratio);
+                // Update positions AFTER reading
+                size_t wraparound_count = playing_head_.GetWrapAroundCount();
+                playing_head_.UpdatePosition(kMicroLoopMaxSize, slice);
+                loop_harmony_head_.UpdatePosition(kMicroLoopMaxSize, slice);
+                size_t updated_wraparound_count = playing_head_.GetWrapAroundCount();
+                float speed;
 
-            // Check for wraparound (used for armed stop + SAMPLER auto-stop)
-            wraparound_count = playing_head_.GetWrapAroundCount();
-            if (is_recording_ && (wraparound_count > prev_wraparound_count_)) {
-                int mode = GetParameterAsBinnedValue(LOOP_MODE);
+                if (wraparound_count != updated_wraparound_count) {
+                    if (speed_error_ && samples_since_speed_change_ >= loop_length / 4) {
+                        target_speed_ = GetNextMarkovSpeed();
+                        samples_since_speed_change_ = 0;
+                    }
+                }
+                samples_since_speed_change_++;
+
+                if (speed_error_) {
+                    // Low-pass filter for smooth speed transitions
+                    smoothed_speed_ += 0.002f * (target_speed_ - smoothed_speed_);
+                    speed = smoothed_speed_;
+                } else {
+                    smoothed_speed_ = 1.0f;
+                    speed = 1.0f;
+                }
+                playing_head_.SetSpeed(speed);
+                float pitch_ratio = ComputePitchRatio(GetParameterAsFloat(PITCH_VOICE));
+                stretch_playing_head_.SetSpeed(fabs(speed) * stretch_speed_);
+                stretch_harmony_head_.SetSpeed(fabs(speed) * stretch_speed_ * pitch_ratio);
+                float harmony_dir = harmony_forward ? 1.0f : -1.0f;
+                loop_harmony_head_.SetSpeed(harmony_dir * fabs(speed) * pitch_ratio);
+
+                // Check for wraparound (used for armed mute + armed stop + SAMPLER auto-stop)
+                if (updated_wraparound_count > prev_wraparound_count_) {
+                    if (armed_mute_on_wrap_) {
+                        loop_mute_ = true;
+                        armed_mute_on_wrap_ = false;
+                    }
+                }
+                if (is_recording_ && (updated_wraparound_count > prev_wraparound_count_)) {
+                    int mode = GetParameterAsBinnedValue(LOOP_MODE);
                     if (armed_stop_ || (mode == SAMPLER)) {
                         if (is_stretching_) {
-                            size_t slice_length = static_cast<size_t>(stretch_slice_ * kMicroLoopMaxSize);
-                            if (slice_length < N) {
-                                slice_length = N;
-                            } else if (slice_length > kMicroLoopMaxSize) {
-                                slice_length = kMicroLoopMaxSize;
-                            }
-                            // If recording stopped early, cap the stretch source to actual data length.
-                            if (loop_length_ < slice_length) {
-                                stretch_source_wrap_length_ = loop_length_;
-                            } else {
-                                stretch_source_wrap_length_ = slice_length;
-                            }
+                            stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
                         }
                         armed_stop_ = false;
                         is_recording_ = false;
-                        is_playing_ = true;
+                        loop_playing_ = true;
+                    }
                 }
+                prev_wraparound_count_ = updated_wraparound_count;
+            } else if (stretch_playing_) {
+                float pitch_ratio = ComputePitchRatio(GetParameterAsFloat(PITCH_VOICE));
+                stretch_playing_head_.SetSpeed(stretch_speed_);
+                stretch_harmony_head_.SetSpeed(stretch_speed_ * pitch_ratio);
             }
-            prev_wraparound_count_ = wraparound_count;
         }
 
         m_audioRight = m_audioLeft;
@@ -974,11 +1010,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 bool MicroLooperModule::Poll() {
     // Looper
     if (armed_recording_) {
-        ResetStates(true);
+        int mode = GetParameterAsBinnedValue(LOOP_MODE);
+        bool preserve_playheads = (mode == OVERDUB);
+        ResetStates(preserve_playheads);
         loop_harmony_head_.SyncTo(playing_head_, kMicroLoopMaxSize, static_cast<float>(harmony_sync_samples_));
         armed_recording_ = false;
         is_recording_ = true;
-        is_playing_ = true;
+        loop_playing_ = true;
         prev_wraparound_count_ = playing_head_.GetWrapAroundCount();
     }
 
@@ -1058,8 +1096,8 @@ bool MicroLooperModule::Poll() {
 
                     float u, v, r2;
                     do {
-                        u = s_rng.randSigned();
-                        v = s_rng.randSigned();
+                        u = s_rng.randSigned(-1.0f, 1.0f);
+                        v = s_rng.randSigned(-1.0f, 1.0f);
                         r2 = u*u + v*v;
                     } while(r2 > 1.0f || r2 < 1e-12f);
 
@@ -1137,11 +1175,11 @@ bool MicroLooperModule::Poll() {
                                 stretch_fade_in_count_ = 0;
                             } else {
                                 stretch_swap_fade_count_ = 0;
-                                stretch_fade_in_count_ =
-                                    1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                                stretch_fade_in_count_ = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
                             }
                             active_stretch_buffer_ = write_stretch_buffer_;
                             use_stretched_buffer_ = true;
+                            stretch_playing_ = true;
                         }
                     }
                     if (s_synth_count % 2 == 0) {
@@ -1257,11 +1295,11 @@ bool MicroLooperModule::Poll() {
                         stretch_fade_in_count_ = 0;
                     } else {
                         stretch_swap_fade_count_ = 0;
-                        stretch_fade_in_count_ =
-                            1024 + static_cast<size_t>(GetParameterAsFloat(ATTACK) * kStretchFadeInSamples);
+                        stretch_fade_in_count_ = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
                     }
                     active_stretch_buffer_ = write_stretch_buffer_;
                     use_stretched_buffer_ = true;
+                    stretch_playing_ = true;
                 }
 
                 is_stretching_ = false;
@@ -1278,9 +1316,9 @@ float MicroLooperModule::GetBrightnessForLED(int led_id) const
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == SAMPLER) {
         if (led_id == 0) {
-            return freeze_playing_ ? 1.0f : 0.0f;
+            return freeze_mute_ ? 0.0f : 1.0f;
         } else {
-            return loop_playing_ ? 1.0f : 0.0f;
+            return loop_mute_ ? 0.0f : 1.0f;
         }
     } else {
         if (led_id == 0) {
