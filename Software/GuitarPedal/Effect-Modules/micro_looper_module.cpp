@@ -383,19 +383,35 @@ void MicroLooperModule::Init(float sample_rate)
 void MicroLooperModule::AlternateFootswitchPressed() {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
-        if (!is_stretching_ && (loop_length_ >= N)) {
+        // Short press should only start stretching when no stretched loop exists yet.
+        if (!use_stretched_buffer_ && !is_stretching_ && (loop_length_ >= N)) {
             StartStretching();
         }
-        freeze_mute_ = false;
+        stretch_playing_ = true;
     } else {
-        freeze_mute_ = !freeze_mute_;
+        stretch_playing_ = !stretch_playing_;
     }
 }
 
+void MicroLooperModule::AlternateFootswitchDoubleTapped() {
+    // Double tap on alternate footswitch stops stretched loop playback.
+    stretch_playing_ = false;
+}
+
 void MicroLooperModule::AlternateFootswitchHeldFor1Second() {
-    // Kill stretched playback and any in-progress stretching.
+    int mode = GetParameterAsBinnedValue(LOOP_MODE);
+    if (mode == OVERDUB) {
+        // Long press explicitly re-runs stretching for the current loop.
+        if (!is_stretching_ && (loop_length_ >= N)) {
+            StartStretching();
+        }
+        stretch_playing_ = true;
+        return;
+    }
+
+    // In SAMPLER mode, long press still clears stretched playback state.
     ResetStretchState(false);
-    freeze_mute_ = true;
+    stretch_playing_ = false;
 }
 
 void MicroLooperModule::BypassFootswitchHeldFor1Second() {
@@ -403,16 +419,12 @@ void MicroLooperModule::BypassFootswitchHeldFor1Second() {
     if (mode == OVERDUB) {
         // Stop playback/recording and clear loop buffers for a clean restart.
         armed_recording_ = false;
-        armed_stop_ = false;
-        armed_mute_on_wrap_ = false;
 
         const bool keep_stretch_playing = use_stretched_buffer_;
         ResetLoopState();
         if (keep_stretch_playing) {
             stretch_playing_ = true;
         }
-
-        loop_mute_ = true;
 
         env_ = 0.0f;
         auto_armed_ = true;
@@ -422,28 +434,34 @@ void MicroLooperModule::BypassFootswitchHeldFor1Second() {
 }
 
 void MicroLooperModule::BypassFootswitchDoubleTapped() {
-    if (loop_playing_ || is_recording_) {
-        // Keep the loop audible until the current cycle boundary.
-        loop_mute_ = false;
-        armed_mute_on_wrap_ = true;
-    } else {
-        armed_mute_on_wrap_ = false;
-        loop_mute_ = true;
+    loop_playing_ = false;
+    armed_recording_ = false;
+
+    if (is_recording_) {
+        if (is_stretching_) {
+            stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
+        }
+        is_recording_ = false;
     }
 }
 
 void MicroLooperModule::BypassFootswitchPressed() {
-    armed_mute_on_wrap_ = false;
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
-         if (!is_recording_) {
+        if (!is_recording_) {
             armed_recording_ = true;
+            loop_playing_ = true;
         } else {
-            armed_stop_ = true;
+            // In overdub mode, single press while recording should stop immediately.
+            if (is_stretching_) {
+                stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
+            }
+            armed_recording_ = false;
+            is_recording_ = false;
+            loop_playing_ = true;
         }
-        loop_mute_ = false;
     } else {
-        loop_mute_ = !loop_mute_;
+        loop_playing_ = !loop_playing_;
     }
 }
 
@@ -477,7 +495,6 @@ void MicroLooperModule::ResetLoopState(bool preserve_playheads) {
     loop_playing_       = false;
     is_recording_       = false;
     loop_length_        = 0;
-    armed_mute_on_wrap_ = false;
 
     if (!preserve_playheads) {
         playing_head_.Reset();
@@ -532,8 +549,6 @@ void MicroLooperModule::ResetStretchState(bool preserve_playback) {
     stretched_play_length_b_ = 0;
     stretched_play_locked_a_ = false;
     stretched_play_locked_b_ = false;
-    stretched_buffer_normalized_a_ = false;
-    stretched_buffer_normalized_b_ = false;
     stretch_speed_ = 1.0f;
     stretch_playing_head_.Reset();
     stretch_harmony_head_.Reset();
@@ -564,11 +579,10 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
 
     // Stop any pending actions.
     armed_recording_ = false;
-    armed_stop_ = false;
 
     // Disable mode-specific playback toggles.
-    loop_mute_ = true;
-    freeze_mute_ = true;
+    loop_playing_ = false;
+    stretch_playing_ = false;
 
     // Reset speed modulation state.
     speed_error_ = false;
@@ -664,10 +678,12 @@ void MicroLooperModule::StartStretching()
 
     stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
 
-    // If we're currently recording, stop on the next wraparound so the
-    // stretcher can finalize once the loop length is fixed.
+    // If we're currently recording, stop immediately so the stretcher
+    // can finalize against a fixed loop length right away.
     if (is_recording_) {
-        armed_stop_ = true;
+        armed_recording_ = false;
+        is_recording_ = false;
+        loop_playing_ = true;
     }
 
     // Always use streaming mode now
@@ -687,14 +703,12 @@ void MicroLooperModule::StartStretching()
         stretched_play_start_b_ = 0;
         stretched_play_length_b_ = 0;
         stretched_play_locked_b_ = false;
-        stretched_buffer_normalized_b_ = false;
     } else {
         stretched_length_a_ = kMicroLoopMaxStretchedSize;
         stretched_ready_length_a_ = 0;
         stretched_play_start_a_ = 0;
         stretched_play_length_a_ = 0;
         stretched_play_locked_a_ = false;
-        stretched_buffer_normalized_a_ = false;
     }
 
     is_stretching_ = true;
@@ -771,8 +785,8 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         }
         auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
         int mode = GetParameterAsBinnedValue(LOOP_MODE);
-        float loop_mix = loop_mute_ ? 0.0f : gains.dry;
-        float freeze_mix = freeze_mute_ ? 0.0f : gains.wet;
+        float loop_mix = gains.dry;
+        float freeze_mix = gains.wet;
         size_t loop_length = static_cast<size_t>(kMicroLoopMaxSize * slice);
 
         if (mode == SAMPLER) {
@@ -974,20 +988,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 float harmony_dir = harmony_forward ? 1.0f : -1.0f;
                 loop_harmony_head_.SetSpeed(harmony_dir * fabs(speed) * pitch_ratio);
 
-                // Check for wraparound (used for armed mute + armed stop + SAMPLER auto-stop)
-                if (updated_wraparound_count > prev_wraparound_count_) {
-                    if (armed_mute_on_wrap_) {
-                        loop_mute_ = true;
-                        armed_mute_on_wrap_ = false;
-                    }
-                }
+                // Check for wraparound (used for SAMPLER auto-stop)
                 if (is_recording_ && (updated_wraparound_count > prev_wraparound_count_)) {
                     int mode = GetParameterAsBinnedValue(LOOP_MODE);
-                    if (armed_stop_ || (mode == SAMPLER)) {
+                    if (mode == SAMPLER) {
                         if (is_stretching_) {
                             stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
                         }
-                        armed_stop_ = false;
                         is_recording_ = false;
                         loop_playing_ = true;
                     }
@@ -1018,12 +1025,6 @@ bool MicroLooperModule::Poll() {
         is_recording_ = true;
         loop_playing_ = true;
         prev_wraparound_count_ = playing_head_.GetWrapAroundCount();
-    }
-
-    // Stop only occurs at wraparound in ProcessStereo; if we're not recording,
-    // clear any stale armed stop state.
-    if (armed_stop_ && !is_recording_) {
-        armed_stop_ = false;
     }
 
     if (is_stretching_) {
@@ -1256,14 +1257,7 @@ bool MicroLooperModule::Poll() {
             }
 
             case StretchState::DONE:{
-                // Normalize the write buffer (which is now the active buffer)
                 size_t final_length = write_stretch_buffer_ ? stretched_length_b_ : stretched_length_a_;
-                /*if (final_length > 0) {
-                    for (size_t i = 0; i < final_length; ++i) {
-                        float norm = write_norm[i];
-                        write_buffer[i] = (fabsf(norm) > eps) ? (write_buffer[i] / norm) : 0.0f;
-                    }
-                }*/
 
                 if (final_length > 0) {
                     size_t play_start = 0;
@@ -1278,13 +1272,6 @@ bool MicroLooperModule::Poll() {
                         stretched_play_length_a_ = play_length;
                         stretched_play_locked_a_ = (play_length > 0);
                     }
-                }
-
-                // Mark write buffer as normalized
-                if (write_stretch_buffer_) {
-                    stretched_buffer_normalized_b_ = true;
-                } else {
-                    stretched_buffer_normalized_a_ = true;
                 }
 
                 if (final_length > 0 && active_stretch_buffer_ != write_stretch_buffer_) {
@@ -1316,9 +1303,9 @@ float MicroLooperModule::GetBrightnessForLED(int led_id) const
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == SAMPLER) {
         if (led_id == 0) {
-            return freeze_mute_ ? 0.0f : 1.0f;
+            return stretch_playing_ ? 1.0f : 0.0f;
         } else {
-            return loop_mute_ ? 0.0f : 1.0f;
+            return loop_playing_ ? 1.0f : 0.0f;
         }
     } else {
         if (led_id == 0) {

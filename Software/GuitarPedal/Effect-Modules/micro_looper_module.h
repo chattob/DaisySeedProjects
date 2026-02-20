@@ -57,6 +57,7 @@ class MicroLooperModule : public BaseEffectModule
     void BypassFootswitchHeldFor1Second() override;
     void AlternateFootswitchHeldFor1Second() override;
     void AlternateFootswitchPressed() override;
+    void AlternateFootswitchDoubleTapped() override;
     void FootswitchPressed(size_t footswitch_id) override;
     void FootswitchReleased(size_t footswitch_id) override;
     float GetBrightnessForLED(int led_id) const override;
@@ -75,15 +76,10 @@ class MicroLooperModule : public BaseEffectModule
 
     // Recording state
     bool armed_recording_ = false;
-    bool armed_stop_ = false;
-    bool armed_mute_on_wrap_ = false;
     bool is_recording_ = false;
     bool loop_playing_ = false;
     bool stretch_playing_ = false;
     size_t loop_length_ = 0;
-
-    bool freeze_mute_ = false;
-    bool loop_mute_ = false;
 
     bool speed_error_ = false;
     float smoothed_speed_ = 1.0f;
@@ -130,8 +126,6 @@ class MicroLooperModule : public BaseEffectModule
     size_t stretched_play_length_b_ = 0;
     bool stretched_play_locked_a_ = false;
     bool stretched_play_locked_b_ = false;
-    bool stretched_buffer_normalized_a_ = false;
-    bool stretched_buffer_normalized_b_ = false;
     uint32_t stretch_declick_count_ = 0;
     float stretch_declick_prev_ = 0.0f;
     uint32_t stretch_harmony_declick_count_ = 0;

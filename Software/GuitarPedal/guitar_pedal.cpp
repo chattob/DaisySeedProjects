@@ -80,7 +80,7 @@ struct {
 
 // Switch Monitoring
 struct {
-    float idleTimeInSeconds = 2.0f;
+    float idleTimeInSeconds = 0.5f;
     bool* enabledCache = nullptr;
     bool* doubleEnabledCache = nullptr;
     float* timeTilIdle = nullptr;
@@ -122,6 +122,7 @@ struct KnobRoute {
 
 enum class SwitchAction {
     Pressed,
+    DoubleTapped,
     Released,
     Held1s
 };
@@ -409,10 +410,13 @@ int main(void) {
 
     // Alternate footswitch: toggle delay pressed & looper held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
+    g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::DoubleTapped});
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Pressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::DoubleTapped});
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::Pressed});
+    g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::DoubleTapped});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
     g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});
 
@@ -562,16 +566,35 @@ int main(void) {
                     // SHORT PRESS -> fire on RisingEdge
                     case SwitchAction::Pressed:
                         if (switchPressed) {
+                            // Keep existing behavior: for special switches, a double-tap
+                            // should not also trigger the single-press callback on tap #2.
+                            const bool suppressSingleForDoubleTap =
+                                isDoubleTapPress &&
+                                (r.switchId == altSwitchID || r.switchId == bypassSwitchID);
+
+                            if (suppressSingleForDoubleTap) {
+                                break;
+                            }
+
                             if (r.switchId == altSwitchID) {
                                 r.effect->AlternateFootswitchPressed();
                             } else if (r.switchId == bypassSwitchID) {
-                                if (isDoubleTapPress) {
-                                    r.effect->BypassFootswitchDoubleTapped();
-                                } else {
-                                    r.effect->BypassFootswitchPressed();
-                                }
+                                r.effect->BypassFootswitchPressed();
                             } else {
                                 r.effect->FootswitchPressed(r.switchId);
+                            }
+                        }
+                        break;
+
+                    // DOUBLE TAP -> fire on RisingEdge of second tap (within tap window)
+                    case SwitchAction::DoubleTapped:
+                        if (switchPressed && isDoubleTapPress) {
+                            if (r.switchId == altSwitchID) {
+                                r.effect->AlternateFootswitchDoubleTapped();
+                            } else if (r.switchId == bypassSwitchID) {
+                                r.effect->BypassFootswitchDoubleTapped();
+                            } else {
+                                r.effect->FootswitchDoubleTapped(r.switchId);
                             }
                         }
                         break;

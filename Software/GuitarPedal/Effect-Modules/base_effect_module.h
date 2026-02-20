@@ -315,6 +315,8 @@ class BaseEffectModule {
     virtual bool AlternateFootswitchForTempo() const { return true; };
     /** Overridable callback when alternate footswitch is pressed */
     virtual void AlternateFootswitchPressed(){};
+    /** Overridable callback when alternate footswitch is double-tapped */
+    virtual void AlternateFootswitchDoubleTapped(){ AlternateFootswitchPressed(); };
     /** Overridable callback when alternate footswitch is released */
     virtual void AlternateFootswitchReleased(){};
     /** Overridable callback when alternate footswitch is held for 1 second */
@@ -331,6 +333,8 @@ class BaseEffectModule {
 
     /** Overridable callback when footswitch with specified ID is pressed */
     virtual void FootswitchPressed(size_t footswitch_id){};
+    /** Overridable callback when footswitch with specified ID is double-tapped */
+    virtual void FootswitchDoubleTapped(size_t footswitch_id){ FootswitchPressed(footswitch_id); };
     /** Overridable callback when footswitch with specified ID is released */
     virtual void FootswitchReleased(size_t footswitch_id){};
     /** Overridable callback when footswitch with specified ID is held for 1 second */
