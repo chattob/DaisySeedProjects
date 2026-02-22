@@ -6,6 +6,7 @@
 #include "Effect-Modules/micro_looper_module.h"
 #include "Effect-Modules/polyoctave_module.h"
 #include "Effect-Modules/delay_module.h"
+#include "Effect-Modules/tape_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/crusher_module.h"
 #include "Effect-Modules/mixer_module.h"
@@ -308,7 +309,7 @@ int main(void) {
     auto delay              = new DelayModule();
     g_effects.micro_looper  = new MicroLooperModule();
     auto polyoctave         = new PolyOctaveModule();
-    auto tape               = new DelayModule();
+    auto tape               = new TapeModule();
     auto distortion         = new DistortionModule();
     auto crusher            = new CrusherModule();
     g_effects.reverb        = new ReverbModule();
@@ -322,13 +323,7 @@ int main(void) {
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
     g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 1.0f);
 
-    tape->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
-    tape->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
-    tape->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
-    tape->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
-    tape->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, DelayModule::MOD_DELAY_TIME);
-    tape->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, DelayModule::WAVE_PERLIN);
-    tape->SetParameterAsBinnedValue(DelayModule::MOD_FREQ, 0.65f);
+    tape->SetParameterAsMagnitude(TapeModule::MIX, 1.0f);
 
     distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
@@ -421,8 +416,8 @@ int main(void) {
     g_routing.knobs[3].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_MIX});
     g_routing.knobs[3].push_back({g_effects.pitchshifter, PitchShifterModule::MIX});
 
-    g_routing.knobs[4].push_back({tape, DelayModule::MOD_AMPLITUDE});
-    g_routing.knobs[4].push_back({tape, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
+    g_routing.knobs[4].push_back({tape, TapeModule::DEPTH});
+    g_routing.knobs[4].push_back({tape, TapeModule::MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
     g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 0.5f + x; }});
@@ -685,9 +680,11 @@ int main(void) {
                 case 3:
                     if (switchPressed) {
                         g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, false);
+                        delay->SetParameterAsBinnedValue(DelayModule::DELAY_TYPE, DelayModule::DELAY_TYPE_REVERSE);
                     }
                     if (switchReleased) {
                         g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, true);
+                        delay->SetParameterAsBinnedValue(DelayModule::DELAY_TYPE, DelayModule::DELAY_TYPE_FORWARD);
                     }
                     break;
                 case 5:

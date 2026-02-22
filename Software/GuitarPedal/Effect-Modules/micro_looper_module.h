@@ -90,6 +90,7 @@ class MicroLooperModule : public BaseEffectModule
     PlayingHead playing_head_;
     PlayingHead loop_harmony_head_;
     size_t prev_wraparound_count_ = 0;
+    uint32_t record_led_blink_until_ms_ = 0;
 
     float GetNextMarkovSpeed();
 

@@ -34,8 +34,8 @@ constexpr size_t MAX_DELAY_SPREAD = static_cast<size_t>(4800.0f); //  50 ms for 
 // forward and reverse delays. A "level" param is included for modulation
 // of the output volume, for stereo panning.
 struct delayRevOct {
-    DelayLineRevOct<float, MAX_DELAY_NORM> *del;
-    DelayLineReverse<float, MAX_DELAY_REV> *delreverse;
+    DelayLineRevOct<float, MAX_DELAY_NORM> *del = nullptr;
+    DelayLineReverse<float, MAX_DELAY_REV> *delreverse = nullptr;
     float currentDelay = 0.0f;
     float delayTarget = 1.0f;
     float feedback = 0.0;
@@ -93,7 +93,7 @@ struct delayRevOct {
 //    A short, zero feedback (one repeat) delay for stereo spread
 
 struct delay_spread {
-    DelayLine<float, MAX_DELAY_SPREAD> *del;
+    DelayLine<float, MAX_DELAY_SPREAD> *del = nullptr;
     float currentDelay = 0.0f;
     float delayTarget = 1.0f;
     float active = false;
@@ -135,6 +135,16 @@ class DelayModule : public BaseEffectModule {
         PARAM_COUNT
     };
 
+    enum DelayType {
+        DELAY_TYPE_FORWARD = 1,
+        DELAY_TYPE_REVERSE,
+        DELAY_TYPE_OCTAVE,
+        DELAY_TYPE_REVERSE_OCT,
+        DELAY_TYPE_DUAL,
+        DELAY_TYPE_DUAL_OCT,
+        DELAY_TYPE_COUNT = DELAY_TYPE_DUAL_OCT
+    };
+
     enum Wave {
         WAVE_SINE = 1,
         WAVE_TRIANGLE,
@@ -154,6 +164,7 @@ class DelayModule : public BaseEffectModule {
     };
 
     void Init(float sample_rate) override;
+    void SetEnabled(bool isEnabled) override;
     void UpdateLEDRate();
     void ParameterChanged(int parameter_id) override;
     void ProcessModulation(size_t size);
@@ -162,8 +173,6 @@ class DelayModule : public BaseEffectModule {
     float GetBrightnessForLED(int led_id) const override;
 
   private:
-    size_t m_instanceIndex;
-
     float m_delaylpFreqMin;
     float m_delaylpFreqMax;
     float m_delaySamplesMin;

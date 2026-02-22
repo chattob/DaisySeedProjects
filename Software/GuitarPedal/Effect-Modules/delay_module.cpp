@@ -10,14 +10,14 @@ static const char *s_waveBinNames[6] = {"Sine", "Triangle", "Saw", "Ramp",
 static const char *s_modParamNames[4] = {"None", "DelayTime", "DelayLevel", "DelayPan"};
 static const char *s_delayModes[3] = {"Normal", "Triplett", "Dotted 8th"};
 static const char *s_delayTypes[6] = {"Forward", "Reverse", "Octave", "ReverseOct", "Dual", "DualOct"};
+static_assert((sizeof(s_delayTypes) / sizeof(s_delayTypes[0])) == DelayModule::DELAY_TYPE_COUNT,
+              "Delay type labels must match DelayType enum count");
 
-static constexpr size_t kDelayModuleInstanceCount = 2;
-static size_t s_nextDelayModuleInstance = 0;
-DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS s_delayLineLeft[kDelayModuleInstanceCount];
-DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS s_delayLineRight[kDelayModuleInstanceCount];
-DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS s_delayLineRevLeft[kDelayModuleInstanceCount];
-DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS s_delayLineRevRight[kDelayModuleInstanceCount];
-DelayLine<float, MAX_DELAY_SPREAD> DSY_SDRAM_BSS s_delayLineSpread[kDelayModuleInstanceCount];
+DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS delayLineLeft;
+DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS delayLineRight;
+DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevLeft;
+DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevRight;
+DelayLine<float, MAX_DELAY_SPREAD> DSY_SDRAM_BSS delayLineSpread;
 
 static constexpr int s_paramCount = DelayModule::PARAM_COUNT; // TODO: TEST STARTING WITH THE EXTREMES OF ALL PARAMETERS (high and low, this is where errors tend to occur)
 static const ParameterMetaData s_metaData[s_paramCount] = {
@@ -58,7 +58,7 @@ static const ParameterMetaData s_metaData[s_paramCount] = {
     {
         name : "Delay Type",
         valueType : ParameterValueType::Binned,
-        valueBinCount : 6,
+        valueBinCount : DelayModule::DELAY_TYPE_COUNT,
         valueBinNames : s_delayTypes,
         defaultValue : {.uint_value = 0},
         knobMapping : -1,
@@ -130,14 +130,6 @@ DelayModule::DelayModule()
       m_delaySamplesMax(192000.0f), m_delaySpreadMin(24.0f), m_delaySpreadMax(2400.0f), m_pdelRight_out(0.0),
       m_currentModLeft(1.0f), m_currentModRight(1.0f),
       m_modOscFreqMin(0.0), m_modOscFreqMax(3.0), m_LEDValue(1.0f) {
-    if (s_nextDelayModuleInstance < kDelayModuleInstanceCount) {
-        m_instanceIndex = s_nextDelayModuleInstance;
-        s_nextDelayModuleInstance++;
-    } else {
-        // Fallback: additional instances will share the last slot.
-        m_instanceIndex = kDelayModuleInstanceCount - 1;
-    }
-
     // Set the name of the effect
     m_name = "Delay";
 
@@ -163,12 +155,6 @@ void DelayModule::UpdateLEDRate() {
 
 void DelayModule::Init(float sample_rate) {
     BaseEffectModule::Init(sample_rate);
-
-    auto &delayLineLeft = s_delayLineLeft[m_instanceIndex];
-    auto &delayLineRight = s_delayLineRight[m_instanceIndex];
-    auto &delayLineRevLeft = s_delayLineRevLeft[m_instanceIndex];
-    auto &delayLineRevRight = s_delayLineRevRight[m_instanceIndex];
-    auto &delayLineSpread = s_delayLineSpread[m_instanceIndex];
 
     delayLineLeft.Init();
     delayLineRevLeft.Init();
@@ -213,6 +199,33 @@ void DelayModule::Init(float sample_rate) {
     auto gains = EnergyCrossfade(GetParameterAsFloat(2));
     delayWetMix = gains.wet;
     delayDryMix = gains.dry;
+}
+
+void DelayModule::SetEnabled(bool isEnabled) {
+    BaseEffectModule::SetEnabled(isEnabled);
+
+    if (!isEnabled) {
+        if (delayLeft.del != nullptr) {
+            delayLeft.del->Reset();
+        }
+        if (delayRight.del != nullptr) {
+            delayRight.del->Reset();
+        }
+        if (delayLeft.delreverse != nullptr) {
+            delayLeft.delreverse->Reset();
+        }
+        if (delayRight.delreverse != nullptr) {
+            delayRight.delreverse->Reset();
+        }
+        if (delaySpread.del != nullptr) {
+            delaySpread.del->Reset();
+        }
+
+        // Re-apply delay mode tap settings, since Reset() clears second-tap fractions.
+        if (delayLeft.del != nullptr && delayRight.del != nullptr) {
+            ParameterChanged(DELAY_MODE);
+        }
+    }
 }
 
 void DelayModule::ParameterChanged(int parameter_id) {
@@ -349,7 +362,7 @@ void DelayModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::O
         m_LEDValue = led_osc.Process(); // update the tempo LED
 
         // Calculate the effect
-        int delayType = GetParameterAsBinnedValue(4) - 1;
+        int delayType = GetParameterAsBinnedValue(DELAY_TYPE);
 
         float timeParam = GetParameterAsFloat(0);
 
@@ -358,21 +371,21 @@ void DelayModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::O
 
         delayLeft.feedback = GetParameterAsFloat(1);
         delayRight.feedback = GetParameterAsFloat(1);
-        if (delayType == 1 || delayType == 3) {
+        if (delayType == DELAY_TYPE_REVERSE || delayType == DELAY_TYPE_REVERSE_OCT) {
             delayLeft.reverseMode = true;
             delayRight.reverseMode = true;
         } else {
             delayLeft.reverseMode = false;
             delayRight.reverseMode = false;
         }
-        if (delayType == 2 || delayType == 3 || delayType == 5) {
+        if (delayType == DELAY_TYPE_OCTAVE || delayType == DELAY_TYPE_REVERSE_OCT || delayType == DELAY_TYPE_DUAL_OCT) {
             delayLeft.del->setOctave(true);
             delayRight.del->setOctave(true);
         } else {
             delayLeft.del->setOctave(false);
             delayRight.del->setOctave(false);
         }
-        if (delayType == 4 || delayType == 5) {
+        if (delayType == DELAY_TYPE_DUAL || delayType == DELAY_TYPE_DUAL_OCT) {
             delayLeft.dual_delay = true;
             delayRight.dual_delay = true;
         } else {
@@ -380,7 +393,7 @@ void DelayModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::O
             delayRight.dual_delay = false;
         }
 
-        if (delayType == 4 || delayType == 5) { // If dual delay is turned on, spread controls the L/R panning of the two delays
+        if (delayType == DELAY_TYPE_DUAL || delayType == DELAY_TYPE_DUAL_OCT) { // If dual delay is turned on, spread controls the L/R panning of the two delays
             delayLeft.level = GetParameterAsFloat(6) + 1.0;
             delayRight.level = 1.0 - GetParameterAsFloat(6);
 

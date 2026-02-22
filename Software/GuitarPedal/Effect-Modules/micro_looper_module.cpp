@@ -35,6 +35,7 @@ constexpr size_t kStretchMinPlayLength = H_OUT * 2;
 constexpr size_t kStretchMinPingPongLength = H_OUT * 4;
 constexpr float kStretchSwapFadeSeconds = 0.12f;
 constexpr float kLoopHarmonySyncMs = 1000.0f;
+constexpr uint32_t kRecordLedWrapBlinkMs = 80;
 
 static inline float Clamp01(float value) {
     if (value < 0.0f) {
@@ -495,6 +496,7 @@ void MicroLooperModule::ResetLoopState(bool preserve_playheads) {
     loop_playing_       = false;
     is_recording_       = false;
     loop_length_        = 0;
+    record_led_blink_until_ms_ = 0;
 
     if (!preserve_playheads) {
         playing_head_.Reset();
@@ -966,6 +968,9 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 float speed;
 
                 if (wraparound_count != updated_wraparound_count) {
+                    if (!is_recording_) {
+                        record_led_blink_until_ms_ = daisy::System::GetNow() + kRecordLedWrapBlinkMs;
+                    }
                     if (speed_error_ && samples_since_speed_change_ >= loop_length / 4) {
                         target_speed_ = GetNextMarkovSpeed();
                         samples_since_speed_change_ = 0;
@@ -1313,7 +1318,10 @@ float MicroLooperModule::GetBrightnessForLED(int led_id) const
         }
     } else {
         if (led_id == 0) {
-            return is_recording_ ? 1.0f : 0.0f;
+            if (is_recording_) {
+                return 1.0f;
+            }
+            return (daisy::System::GetNow() < record_led_blink_until_ms_) ? 1.0f : 0.0f;
         } else {
             return 0.0f;
         }
