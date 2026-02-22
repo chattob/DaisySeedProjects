@@ -11,11 +11,13 @@ static const char *s_modParamNames[4] = {"None", "DelayTime", "DelayLevel", "Del
 static const char *s_delayModes[3] = {"Normal", "Triplett", "Dotted 8th"};
 static const char *s_delayTypes[6] = {"Forward", "Reverse", "Octave", "ReverseOct", "Dual", "DualOct"};
 
-DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS delayLineLeft;
-DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS delayLineRight;
-DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevLeft;
-DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS delayLineRevRight;
-DelayLine<float, MAX_DELAY_SPREAD> DSY_SDRAM_BSS delayLineSpread;
+static constexpr size_t kDelayModuleInstanceCount = 2;
+static size_t s_nextDelayModuleInstance = 0;
+DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS s_delayLineLeft[kDelayModuleInstanceCount];
+DelayLineRevOct<float, MAX_DELAY_NORM> DSY_SDRAM_BSS s_delayLineRight[kDelayModuleInstanceCount];
+DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS s_delayLineRevLeft[kDelayModuleInstanceCount];
+DelayLineReverse<float, MAX_DELAY_REV> DSY_SDRAM_BSS s_delayLineRevRight[kDelayModuleInstanceCount];
+DelayLine<float, MAX_DELAY_SPREAD> DSY_SDRAM_BSS s_delayLineSpread[kDelayModuleInstanceCount];
 
 static constexpr int s_paramCount = DelayModule::PARAM_COUNT; // TODO: TEST STARTING WITH THE EXTREMES OF ALL PARAMETERS (high and low, this is where errors tend to occur)
 static const ParameterMetaData s_metaData[s_paramCount] = {
@@ -128,6 +130,14 @@ DelayModule::DelayModule()
       m_delaySamplesMax(192000.0f), m_delaySpreadMin(24.0f), m_delaySpreadMax(2400.0f), m_pdelRight_out(0.0),
       m_currentModLeft(1.0f), m_currentModRight(1.0f),
       m_modOscFreqMin(0.0), m_modOscFreqMax(3.0), m_LEDValue(1.0f) {
+    if (s_nextDelayModuleInstance < kDelayModuleInstanceCount) {
+        m_instanceIndex = s_nextDelayModuleInstance;
+        s_nextDelayModuleInstance++;
+    } else {
+        // Fallback: additional instances will share the last slot.
+        m_instanceIndex = kDelayModuleInstanceCount - 1;
+    }
+
     // Set the name of the effect
     m_name = "Delay";
 
@@ -153,6 +163,12 @@ void DelayModule::UpdateLEDRate() {
 
 void DelayModule::Init(float sample_rate) {
     BaseEffectModule::Init(sample_rate);
+
+    auto &delayLineLeft = s_delayLineLeft[m_instanceIndex];
+    auto &delayLineRight = s_delayLineRight[m_instanceIndex];
+    auto &delayLineRevLeft = s_delayLineRevLeft[m_instanceIndex];
+    auto &delayLineRevRight = s_delayLineRevRight[m_instanceIndex];
+    auto &delayLineSpread = s_delayLineSpread[m_instanceIndex];
 
     delayLineLeft.Init();
     delayLineRevLeft.Init();

@@ -1298,6 +1298,10 @@ bool MicroLooperModule::Poll() {
     return true;
 }
 
+bool MicroLooperModule::IsRecording() const {
+    return is_recording_;
+}
+
 float MicroLooperModule::GetBrightnessForLED(int led_id) const
 {
     int mode = GetParameterAsBinnedValue(LOOP_MODE);

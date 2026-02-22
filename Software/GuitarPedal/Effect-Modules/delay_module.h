@@ -162,6 +162,8 @@ class DelayModule : public BaseEffectModule {
     float GetBrightnessForLED(int led_id) const override;
 
   private:
+    size_t m_instanceIndex;
+
     float m_delaylpFreqMin;
     float m_delaylpFreqMax;
     float m_delaySamplesMin;

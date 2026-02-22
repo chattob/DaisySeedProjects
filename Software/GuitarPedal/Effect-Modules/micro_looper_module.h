@@ -61,6 +61,7 @@ class MicroLooperModule : public BaseEffectModule
     void FootswitchPressed(size_t footswitch_id) override;
     void FootswitchReleased(size_t footswitch_id) override;
     float GetBrightnessForLED(int led_id) const override;
+    bool IsRecording() const;
     void ParameterChanged(int parameter_id) override;
 
   private:
