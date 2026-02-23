@@ -110,6 +110,8 @@ struct {
 
 // Knob/Switch Routing Types & State
 typedef float (*KnobMapFn)(float);
+static constexpr int kMidiCCCount = 128;
+static constexpr int kMidiKnobMirrorBaseCC = 14;
 
 static constexpr KnobMapFn kDefaultMap = [](float x) {
     return fclamp(x, 0.0f, 1.0f);
@@ -136,12 +138,45 @@ struct SwitchRoute {
 
 struct {
     std::vector<std::vector<KnobRoute>> knobs;
+    std::vector<std::vector<KnobRoute>> midiCC;
     std::vector<std::vector<SwitchRoute>> switches;
 } g_routing;
 
+static bool DispatchParamRoutes(const std::vector<KnobRoute>& routes, float normalizedValue) {
+    bool handled = false;
+
+    for (const KnobRoute& r : routes) {
+        if (!r.effect) continue;
+        if (r.paramId < 0) continue;
+
+        float mapped = r.mapper(normalizedValue);
+        mapped = fclamp(mapped, 0.0f, 1.0f);
+        r.effect->SetParameterAsMagnitude(r.paramId, mapped);
+        handled = true;
+    }
+
+    return handled;
+}
+
 // Typical Switch case for Message Type.
 void HandleMidiMessage(MidiEvent m) {
-    return;
+    // Use channel 1..16 in configuration. Set <=0 for omni mode.
+    if (g_midi.channel > 0 && (m.channel + 1) != g_midi.channel) {
+        return;
+    }
+
+    switch (m.type) {
+        case ControlChange: {
+            ControlChangeEvent cc = m.AsControlChange();
+            if (cc.control_number >= g_routing.midiCC.size()) break;
+            float normalizedValue = static_cast<float>(cc.value) / 127.0f;
+            DispatchParamRoutes(g_routing.midiCC[cc.control_number], normalizedValue);
+            break;
+        }
+        
+        default:
+            break;
+    }
 }
 
 //======================================================================
@@ -369,20 +404,12 @@ int main(void) {
     // Size the routes to the real knob count
     const int knobCount = g_hardware.GetParameterControlCount();
     g_routing.knobs.resize(knobCount);
+    g_routing.midiCC.resize(kMidiCCCount);
 
     // Size the routes to the real switches count
     g_routing.switches.resize(g_hardware.GetSwitchCount());
 
     // Setup knob routes
-    /*polyoctave->SetParameterAsMagnitude(PolyOctaveModule::UP_1_OCT, 0.0f);
-    polyoctave->SetParameterAsMagnitude(PolyOctaveModule::DOWN_2_OCT, 0.0f);
-    //g_routing.knobs[0].push_back({crusher, CrusherModule::CUTOFF});
-    g_routing.knobs[1].push_back({crusher, CrusherModule::RATE});
-    g_routing.knobs[2].push_back({crusher, CrusherModule::JITTER});
-    g_routing.knobs[4].push_back({crusher, CrusherModule::MIX});
-    g_routing.knobs[3].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT});*/
-
-
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING});
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
@@ -422,9 +449,15 @@ int main(void) {
     g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
     g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 0.5f + x; }});
 
- /*g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DRY, [](float x) { return 1.0f - 2.0f * fabs(x - 0.5f); }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::UP_1_OCT, [](float x) { return x >= 0.5f ? 2 * (x - 0.5f) : 0.0f; }});
-    g_routing.knobs[2].push_back({polyoctave, PolyOctaveModule::DOWN_1_OCT, [](float x) { return x >= 0.5f ? 0.0f : 2 * (0.5f - x); }});*/
+    // Mirror knob routes onto MIDI CCs so external controllers can drive the same mappings.
+    // CC 14..19 mirror knob 0..5 by default.
+    for (int knob = 0; knob < knobCount; ++knob) {
+        const int cc = kMidiKnobMirrorBaseCC + knob;
+        if (cc < 0 || cc >= kMidiCCCount) continue;
+        g_routing.midiCC[cc] = g_routing.knobs[knob];
+    }
+    g_routing.midiCC[20].push_back({distortion, DistortionModule::GAIN});
+
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
 
@@ -733,14 +766,7 @@ int main(void) {
                 float v = g_knobs.cache[k]; // normalized 0..1 after deadzone mapping
 
                 // Send to all mapped targets of knob k
-                for (const KnobRoute &r : g_routing.knobs[k]) {
-                    if (!r.effect) continue;               // safety: null-check
-                    if (r.paramId < 0) continue;          // safety: invalid param id
-
-                    float val = r.mapper(v);
-                    val = fclamp(val, 0.0f, 1.0f);
-                    r.effect->SetParameterAsMagnitude(r.paramId, val);
-                }
+                DispatchParamRoutes(g_routing.knobs[k], v);
             }
         }
     }
