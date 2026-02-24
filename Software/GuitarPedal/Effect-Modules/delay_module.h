@@ -66,6 +66,7 @@ struct delayRevOct {
         }
         // float read2 = delreverse->ReadFwd();
         if (active) {
+            // Preserve legacy behavior: input is always written, feedback only affects repeats.
             del->Write((feedback * read) + in);
             delreverse->Write((feedback * read) +
                               in); // Writing the read from fwd/oct delay line allows for combining oct and rev for reverse octave!

@@ -180,17 +180,6 @@ float DistortionModule::tubeSaturation(float input, float gain) {
     return fast_atan(input * gain);
 }
 
-float bell(float x, float minPos, float depth)
-{
-    float m = minPos;                // where the minimum is, e.g. 0.7
-    float h = depth;                 // depth of the dip, e.g. 0.6
-
-    float denom = (x < m ? m : (1.0f - m));
-    float t = (x - m) / denom;       // normalized distance from the minimum
-
-    return 1.0f - h * (1.0f - t * t);
-}
-
 float DistortionModule::multiStage(float sample, float env) {
     const float gain = GetParameterAsFloat(GAIN);
     const float g = m_gainMin + (gain * (m_gainMax - m_gainMin));
@@ -201,8 +190,6 @@ float DistortionModule::multiStage(float sample, float env) {
     const float d1 = 0.80f;  // first stage: main shaping
     const float d2 = 0.67f;  // second stage: additional compression
     const float d3 = 0.56f;  // third stage: "power amp"
-
-    const float unity = 1.0f / (g * g * d1 * d2 * d3);
 
     // Envelope-based bias: no bias for very low levels
     float env_norm  = env / 0.2f;          // 0.2 ≈ "pretty loud", tweak by ear
@@ -220,8 +207,9 @@ float DistortionModule::multiStage(float sample, float env) {
     // Stage 3: atan as "power amp" stage
     float s3 = tubeSaturation(s2, d3 * g);
 
-    // Scale to have no volume change at unity gain and compensate for volume increase at 25% gain.
-    return s3 * unity * bell(gain, 0.25f, 0.5f);
+    // Per-step compensation table aligned to MIDI CC gain steps (0..127).
+    const int driveCompIdx = std::clamp(static_cast<int>(gain * 127.0f + 0.5f), 0, 127);
+    return s3 * kDriveComp[driveCompIdx];
 }
 
 float DistortionModule::dynamicPreFilterCutoff(float inputEnergy) {

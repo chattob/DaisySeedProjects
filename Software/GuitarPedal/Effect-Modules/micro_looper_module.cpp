@@ -7,7 +7,7 @@
 
 using namespace bkshepherd;
 
-float DSY_SDRAM_BSS MicroLooperModule::buffer_[kMicroLoopMaxSize];
+float DSY_SDRAM_BSS MicroLooperModule::buffer_[kNumLoopLayers][kMicroLoopMaxSize];
 float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_a_[kMicroLoopMaxStretchedSize];
 float DSY_SDRAM_BSS MicroLooperModule::stretched_buffer_b_[kMicroLoopMaxStretchedSize];
 
@@ -330,9 +330,9 @@ void MicroLooperModule::Init(float sample_rate)
     BaseEffectModule::Init(sample_rate);
 
     ResetStates();
-    for (size_t i = 0; i < kMicroLoopMaxSize; ++i) {
-        buffer_[i] = 0.0f;
-    }
+    ClearTopLayers(0);
+    has_committed_loop_ = false;
+    recording_layer_ = 0;
 
     // Initialize FFT
     s_fft.Init();
@@ -420,6 +420,7 @@ void MicroLooperModule::BypassFootswitchHeldFor1Second() {
     if (mode == OVERDUB) {
         // Stop playback/recording and clear loop buffers for a clean restart.
         armed_recording_ = false;
+        FinalizeRecording(false);
 
         const bool keep_stretch_playing = use_stretched_buffer_;
         ResetLoopState();
@@ -430,7 +431,9 @@ void MicroLooperModule::BypassFootswitchHeldFor1Second() {
         env_ = 0.0f;
         auto_armed_ = true;
 
-        std::memset(buffer_, 0, sizeof(buffer_));
+        ClearTopLayers(0);
+        has_committed_loop_ = false;
+        recording_layer_ = 0;
     }
 }
 
@@ -442,6 +445,7 @@ void MicroLooperModule::BypassFootswitchDoubleTapped() {
         if (is_stretching_) {
             stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
         }
+        FinalizeRecording(true);
         is_recording_ = false;
     }
 }
@@ -458,6 +462,7 @@ void MicroLooperModule::BypassFootswitchPressed() {
                 stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
             }
             armed_recording_ = false;
+            FinalizeRecording(true);
             is_recording_ = false;
             loop_playing_ = true;
         }
@@ -495,6 +500,7 @@ void MicroLooperModule::FootswitchReleased(size_t footswitch_id) {
 void MicroLooperModule::ResetLoopState(bool preserve_playheads) {
     loop_playing_       = false;
     is_recording_       = false;
+    recording_layer_    = 0;
     loop_length_        = 0;
     record_led_blink_until_ms_ = 0;
 
@@ -561,6 +567,37 @@ void MicroLooperModule::ResetAutoStartCounters() {
     below_count_ = 0;
 }
 
+void MicroLooperModule::ClearTopLayers(size_t clear_from) {
+    if (clear_from >= kNumLoopLayers) {
+        return;
+    }
+    for (size_t layer = clear_from; layer < kNumLoopLayers; ++layer) {
+        std::fill(&buffer_[layer][0], &buffer_[layer][0] + kMicroLoopMaxSize, 0.0f);
+    }
+}
+
+void MicroLooperModule::SquashLayers() {
+    // With two layers: fold temporary overdub layer into base layer.
+    for (size_t sample = 0; sample < kMicroLoopMaxSize; ++sample) {
+        buffer_[0][sample] += buffer_[1][sample];
+    }
+    std::fill(&buffer_[1][0], &buffer_[1][0] + kMicroLoopMaxSize, 0.0f);
+}
+
+void MicroLooperModule::FinalizeRecording(bool commit_recording_layer) {
+    if (recording_layer_ > 0) {
+        if (commit_recording_layer) {
+            SquashLayers();
+            has_committed_loop_ = true;
+        } else {
+            ClearTopLayers(recording_layer_);
+        }
+        recording_layer_ = 0;
+    } else if (loop_length_ > 0 && commit_recording_layer) {
+        has_committed_loop_ = true;
+    }
+}
+
 void MicroLooperModule::ResetStates(bool preserve_playheads) {
     ResetLoopState(preserve_playheads);
     ResetStretchState(true);
@@ -596,7 +633,9 @@ void MicroLooperModule::ParameterChanged(int parameter_id) {
     auto_armed_ = true;
 
     // Clear base loop buffer so fading doesn't pull old audio across modes.
-    std::memset(buffer_, 0, sizeof(buffer_));
+    ClearTopLayers(0);
+    has_committed_loop_ = false;
+    recording_layer_ = 0;
 }
 
 void MicroLooperModule::UpdateEnv(float x_abs)
@@ -656,10 +695,10 @@ void MicroLooperModule::WriteBuffer(float in)
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == OVERDUB) {
         float fading = GetParameterAsFloat(FADING);
-        buffer_[write_index] *= fading;
-        buffer_[write_index] += in;
+        buffer_[recording_layer_][write_index] *= fading;
+        buffer_[recording_layer_][write_index] += in;
     } else {
-        buffer_[write_index] = in;
+        buffer_[0][write_index] = in;
     }
 
     // Cap length to the buffer size to avoid invalid lengths in OVERDUB mode.
@@ -684,6 +723,7 @@ void MicroLooperModule::StartStretching()
     // can finalize against a fixed loop length right away.
     if (is_recording_) {
         armed_recording_ = false;
+        FinalizeRecording(true);
         is_recording_ = false;
         loop_playing_ = true;
     }
@@ -955,8 +995,13 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 if (loop_harmony_head_position >= kMicroLoopMaxSize) {
                     loop_harmony_head_position %= kMicroLoopMaxSize;
                 }
-                float loop_harmony_sample = buffer_[loop_harmony_head_position];
-                float loop_mix_sample = (buffer_[playing_head_position] * harmony_gains.dry)
+                float loop_sample = buffer_[0][playing_head_position];
+                float loop_harmony_sample = buffer_[0][loop_harmony_head_position];
+                if (is_recording_ && recording_layer_ > 0) {
+                    loop_sample += buffer_[recording_layer_][playing_head_position];
+                    loop_harmony_sample += buffer_[recording_layer_][loop_harmony_head_position];
+                }
+                float loop_mix_sample = (loop_sample * harmony_gains.dry)
                                       + (loop_harmony_sample * harmony_gains.wet);
                 m_audioLeft += loop_mix_sample * loop_mix;
 
@@ -968,9 +1013,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                 float speed;
 
                 if (wraparound_count != updated_wraparound_count) {
-                    if (!is_recording_) {
-                        record_led_blink_until_ms_ = daisy::System::GetNow() + kRecordLedWrapBlinkMs;
-                    }
+                    record_led_blink_until_ms_ = daisy::System::GetNow() + kRecordLedWrapBlinkMs;
                     if (speed_error_ && samples_since_speed_change_ >= loop_length / 4) {
                         target_speed_ = GetNextMarkovSpeed();
                         samples_since_speed_change_ = 0;
@@ -1000,6 +1043,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                         if (is_stretching_) {
                             stretch_source_wrap_length_ = ComputeStretchSourceLength(stretch_slice_, loop_length_);
                         }
+                        FinalizeRecording(true);
                         is_recording_ = false;
                         loop_playing_ = true;
                     }
@@ -1024,7 +1068,14 @@ bool MicroLooperModule::Poll() {
     if (armed_recording_) {
         int mode = GetParameterAsBinnedValue(LOOP_MODE);
         bool preserve_playheads = (mode == OVERDUB);
+        bool overdub_existing_loop = (mode == OVERDUB) && has_committed_loop_;
         ResetStates(preserve_playheads);
+        if (overdub_existing_loop) {
+            recording_layer_ = 1;
+            ClearTopLayers(recording_layer_);
+        } else {
+            recording_layer_ = 0;
+        }
         loop_harmony_head_.SyncTo(playing_head_, kMicroLoopMaxSize, static_cast<float>(harmony_sync_samples_));
         armed_recording_ = false;
         is_recording_ = true;
@@ -1065,7 +1116,7 @@ bool MicroLooperModule::Poll() {
                     if (is_recording_ && buffer_len > loop_length_) {
                         buffer_len = loop_length_;
                     }
-                    GatherFrameFromBuffer(s_snapshot_buffer, buffer_, buffer_len, stretch_read_pos_);
+                    GatherFrameFromBuffer(s_snapshot_buffer, buffer_[0], buffer_len, stretch_read_pos_);
                     s_stretch_state = StretchState::APPLY_ANALYSIS_WINDOW;
                 }
                 break;
@@ -1317,13 +1368,18 @@ float MicroLooperModule::GetBrightnessForLED(int led_id) const
             return loop_playing_ ? 1.0f : 0.0f;
         }
     } else {
+        const uint32_t now_ms = daisy::System::GetNow();
         if (led_id == 0) {
             if (is_recording_) {
-                return 1.0f;
+                return (now_ms < record_led_blink_until_ms_) ? 0.0f : 1.0f;
             }
-            return (daisy::System::GetNow() < record_led_blink_until_ms_) ? 1.0f : 0.0f;
+            return (now_ms < record_led_blink_until_ms_) ? 1.0f : 0.0f;
         } else {
-            return 0.0f;
+            if (is_stretching_) {
+                bool on = ((now_ms / kRecordLedWrapBlinkMs) % 2) == 0;
+                return on ? 1.0f : 0.0f;
+            }
+            return (stretch_playing_ && use_stretched_buffer_) ? 1.0f : 0.0f;
         }
     }
 }

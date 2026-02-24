@@ -6,7 +6,6 @@
 #include "Effect-Modules/micro_looper_module.h"
 #include "Effect-Modules/polyoctave_module.h"
 #include "Effect-Modules/delay_module.h"
-#include "Effect-Modules/tape_module.h"
 #include "Effect-Modules/distortion_module.h"
 #include "Effect-Modules/crusher_module.h"
 #include "Effect-Modules/mixer_module.h"
@@ -341,24 +340,24 @@ int main(void) {
     g_bypass.bypassToggleTransitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_bypass.bypassToggleTransitionTimeInSeconds);
     g_crossfade.transitionTimeInSamples = g_hardware.GetNumberOfSamplesForTime(g_crossfade.transitionTimeInSeconds);
 
-    auto delay              = new DelayModule();
     g_effects.micro_looper  = new MicroLooperModule();
     auto polyoctave         = new PolyOctaveModule();
-    auto tape               = new TapeModule();
+    auto tape               = new DelayModule();
     auto distortion         = new DistortionModule();
     auto crusher            = new CrusherModule();
     g_effects.reverb        = new ReverbModule();
     g_effects.pitchshifter  = new PitchShifterModule();
 
-    // Fix some effect parameters
-    delay->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
-    delay->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 0.5f);
-    delay->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, DelayModule::MOD_NONE);
-
     g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
     g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 1.0f);
 
-    tape->SetParameterAsMagnitude(TapeModule::MIX, 1.0f);
+    tape->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
+    tape->SetParameterAsMagnitude(DelayModule::DELAY_TIME, 0.0f);
+    tape->SetParameterAsMagnitude(DelayModule::D_FEEDBACK, 0.0f);
+    tape->SetParameterAsMagnitude(DelayModule::DELAY_MIX, 1.0f);
+    tape->SetParameterAsBinnedValue(DelayModule::MOD_PARAM, DelayModule::MOD_DELAY_TIME);
+    tape->SetParameterAsBinnedValue(DelayModule::MOD_WAVE, DelayModule::WAVE_PERLIN);
+    tape->SetParameterAsMagnitude(DelayModule::MOD_FREQ, 0.65f);
 
     distortion->SetParameterAsMagnitude(DistortionModule::LEVEL, 1.0f);
     distortion->SetParameterAsMagnitude(DistortionModule::TONE, 0.50f);
@@ -384,14 +383,12 @@ int main(void) {
 
     g_effects.mixer = new MixerModule();
 
-    g_effects.chain.push_back(delay);
     g_effects.chain.push_back(g_effects.micro_looper);
     g_effects.chain.push_back(g_effects.reverb);
     g_effects.chain.push_back(g_effects.pitchshifter);
     g_effects.chain.push_back(tape);
     g_effects.chain.push_back(distortion);
     g_effects.chain.push_back(crusher);
-    //g_effects.chain.push_back(polyoctave);
     g_effects.chain.push_back(g_effects.mixer);  // Mixer last in chain
 
     for (auto* effect : g_effects.chain) {
@@ -413,28 +410,9 @@ int main(void) {
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::SENSITIVITY});
     g_routing.knobs[0].push_back({g_effects.micro_looper, MicroLooperModule::FADING});
     g_routing.knobs[0].push_back({g_effects.reverb, ReverbModule::TIME});
-    g_routing.knobs[0].push_back({delay, DelayModule::D_FEEDBACK});
 
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::ATTACK});
     g_routing.knobs[1].push_back({g_effects.micro_looper, MicroLooperModule::SLICE, [](float x) { return 1.0f/kMicroLoopSliceDiv + x * (kMicroLoopSliceDiv - 1.0f)/kMicroLoopSliceDiv; }});
-    g_routing.knobs[1].push_back({
-        delay,
-        DelayModule::DELAY_TIME,
-        [](float x) {
-            // Same slice mapping you use for MicroLooperModule::SLICE
-            const float slice = 1.0f / kMicroLoopSliceDiv
-                            + x * (kMicroLoopSliceDiv - 1.0f) / kMicroLoopSliceDiv;
-
-            // Slice duration in samples
-            const float sliceSamples = slice * static_cast<float>(kMicroLoopMaxSize);
-
-            // Delay time param is mapped to 2400..192000 samples in DelayModule
-            constexpr float kDelayMinSamples = 2400.0f;
-            constexpr float kDelayMaxSamples = 192000.0f;
-
-            return fclamp((sliceSamples - kDelayMinSamples) / (kDelayMaxSamples - kDelayMinSamples), 0.0f, 1.0f);
-        }
-    });
 
     g_routing.knobs[2].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_VOICE});
     g_routing.knobs[2].push_back({g_effects.pitchshifter, PitchShifterModule::DIRECTION, [](float x) { return x >= 0.5f ? 1.0f : 0.0f; }});
@@ -443,10 +421,10 @@ int main(void) {
     g_routing.knobs[3].push_back({g_effects.micro_looper, MicroLooperModule::PITCH_MIX});
     g_routing.knobs[3].push_back({g_effects.pitchshifter, PitchShifterModule::MIX});
 
-    g_routing.knobs[4].push_back({tape, TapeModule::DEPTH});
-    g_routing.knobs[4].push_back({tape, TapeModule::MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
+    g_routing.knobs[4].push_back({tape, DelayModule::MOD_AMPLITUDE});
+    g_routing.knobs[4].push_back({tape, DelayModule::DELAY_MIX, [](float x) { return x == 0.0f ? 0.0f : 1.0f; }});
 
-    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 1.6f * (x - 0.5f); }});
+    g_routing.knobs[5].push_back({distortion, DistortionModule::GAIN, [](float x) { return x < 0.5f ? 0.0f : 2.0f * (x - 0.5f); }});
     g_routing.knobs[5].push_back({crusher, CrusherModule::RATE, [](float x) { return x > 0.5f ? 1.0f : 0.5f + x; }});
 
     // Mirror knob routes onto MIDI CCs so external controllers can drive the same mappings.
@@ -461,7 +439,7 @@ int main(void) {
     int altSwitchID         = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Alternate);
     int bypassSwitchID      = g_hardware.GetPreferredSwitchIDForSpecialFunctionType(SpecialFunctionType::Bypass);
 
-    // Alternate footswitch: toggle delay pressed & looper held
+    // Alternate footswitch: looper pressed & held
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Pressed});
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::DoubleTapped});
     g_routing.switches[bypassSwitchID].push_back({g_effects.micro_looper, bypassSwitchID, SwitchAction::Held1s});
@@ -541,11 +519,6 @@ int main(void) {
         for (auto* effect : g_effects.chain) {
             if (!effect) continue;
             res |= effect->Poll();
-        }
-
-        const bool shouldEnableDelay = !g_effects.micro_looper->IsRecording();
-        if (delay->IsEnabled() != shouldEnableDelay) {
-            delay->SetEnabled(shouldEnableDelay);
         }
 
         // Handle Knob Changes
@@ -713,11 +686,9 @@ int main(void) {
                 case 3:
                     if (switchPressed) {
                         g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, false);
-                        delay->SetParameterAsBinnedValue(DelayModule::DELAY_TYPE, DelayModule::DELAY_TYPE_REVERSE);
                     }
                     if (switchReleased) {
                         g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, true);
-                        delay->SetParameterAsBinnedValue(DelayModule::DELAY_TYPE, DelayModule::DELAY_TYPE_FORWARD);
                     }
                     break;
                 case 5:

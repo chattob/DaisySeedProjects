@@ -20,6 +20,7 @@ static constexpr size_t kStretchClearChunk = 8192;
 static constexpr float kMicroLoopSliceDiv = 6;
 static constexpr float kMicroLoopMinSlice = 1.0f / kMicroLoopSliceDiv;
 static constexpr size_t kMicroLoopMaxSize = 16384 * static_cast<size_t>(kMicroLoopSliceDiv);
+static constexpr size_t kNumLoopLayers = 2;
 static_assert(kMicroLoopMaxSize >= N, "kMicroLoopMaxSize must be >= N");
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = (((kMicroLoopMaxSize - N) / H_IN) + 1) * STRETCH * H_OUT;
@@ -69,9 +70,12 @@ class MicroLooperModule : public BaseEffectModule
     void ResetLoopState(bool preserve_playheads = false);
     void ResetStretchState(bool preserve_playback);
     void ResetAutoStartCounters();
+    void ClearTopLayers(size_t clear_from);
+    void SquashLayers();
+    void FinalizeRecording(bool merge_overdub_layer = true);
 
     // Loop buffer - stored in SDRAM
-    static float DSY_SDRAM_BSS buffer_[kMicroLoopMaxSize];
+    static float DSY_SDRAM_BSS buffer_[kNumLoopLayers][kMicroLoopMaxSize];
     static float DSY_SDRAM_BSS stretched_buffer_a_[kMicroLoopMaxStretchedSize];
     static float DSY_SDRAM_BSS stretched_buffer_b_[kMicroLoopMaxStretchedSize];
 
@@ -81,6 +85,8 @@ class MicroLooperModule : public BaseEffectModule
     bool loop_playing_ = false;
     bool stretch_playing_ = false;
     size_t loop_length_ = 0;
+    bool has_committed_loop_ = false;
+    size_t recording_layer_ = 0;
 
     bool speed_error_ = false;
     float smoothed_speed_ = 1.0f;
