@@ -159,6 +159,44 @@ static bool DispatchParamRoutes(const std::vector<KnobRoute>& routes, float norm
 
 // Typical Switch case for Message Type.
 void HandleMidiMessage(MidiEvent m) {
+    if (m.type == SystemRealTime) {
+        switch (m.srt_type) {
+            case TimingClock:
+                if (g_midi.clock.running) {
+                    g_midi.clock.tickCount++;
+
+                    if (g_effects.micro_looper) {
+                        g_effects.micro_looper->OnMidiClockPulse();
+                        if ((g_midi.clock.tickCount % 24) == 0) {
+                            g_effects.micro_looper->SetClockBeat();
+                        }
+                    }
+
+                    g_midi.beatLightOn = (g_midi.clock.tickCount % 24) < 8;
+                }
+                break;
+
+            case Start:
+                g_midi.clock.tickCount = 0;
+                g_midi.clock.running = true;
+                g_midi.beatLightOn = false;
+                break;
+
+            case Continue:
+                g_midi.clock.running = true;
+                break;
+
+            case Stop:
+                g_midi.clock.running = false;
+                g_midi.beatLightOn = false;
+                break;
+
+            default:
+                break;
+        }
+        return;
+    }
+
     // Use channel 1..16 in configuration. Set <=0 for omni mode.
     if (g_midi.channel > 0 && (m.channel + 1) != g_midi.channel) {
         return;
@@ -448,8 +486,6 @@ int main(void) {
     g_routing.switches[altSwitchID].push_back({g_effects.micro_looper, altSwitchID, SwitchAction::Held1s});
     g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::Pressed});
     g_routing.switches[altSwitchID].push_back({g_effects.reverb, altSwitchID, SwitchAction::DoubleTapped});
-    g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Pressed});
-    g_routing.switches[4].push_back({g_effects.micro_looper, 4, SwitchAction::Released});
 
     // Setup Relay Bypass State
     if (g_hardware.SupportsTrueBypass()) {
@@ -519,6 +555,10 @@ int main(void) {
         for (auto* effect : g_effects.chain) {
             if (!effect) continue;
             res |= effect->Poll();
+        }
+
+        if (g_effects.micro_looper) {
+            g_effects.micro_looper->SetMidiClockRunning(g_midi.clock.running);
         }
 
         // Handle Knob Changes
@@ -683,7 +723,7 @@ int main(void) {
                         g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 0.0f);
                     }
                     break;
-                case 3:
+                case 4:
                     if (switchPressed) {
                         g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::PITCH_DIRECTION, false);
                     }
@@ -692,6 +732,21 @@ int main(void) {
                     }
                     break;
                 case 5:
+                    if (switchPressed) {
+                        g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::SPEED_ERROR, true);
+                    }
+                    if (switchReleased) {
+                        g_effects.micro_looper->SetParameterAsBool(MicroLooperModule::SPEED_ERROR, false);
+                    }
+                    break;
+                case 6:
+                    if (switchPressed) {
+                        g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
+                    }
+                    if (switchReleased) {
+                        g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::OVERDUB);
+                    }
+                case 7:
                     if (switchPressed) {
                         g_effects.micro_looper->SetEnabled(false);
                         g_effects.reverb->SetEnabled(true);

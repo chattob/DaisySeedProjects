@@ -15,9 +15,9 @@ static constexpr size_t H_IN = N / 8;      // Input hop (analysis)
 static constexpr size_t STRETCH = 8;       // Stretch factor
 static constexpr size_t H_OUT = N / 4;     // Output hop (synthesis)
 static constexpr size_t OUT_RING = 4 * N;
-static constexpr size_t kStretchClearChunk = 8192;
+static constexpr size_t kStretchClearChunk = 128;
 
-static constexpr float kMicroLoopSliceDiv = 6;
+static constexpr float kMicroLoopSliceDiv = 12;
 static constexpr float kMicroLoopMinSlice = 1.0f / kMicroLoopSliceDiv;
 static constexpr size_t kMicroLoopMaxSize = 16384 * static_cast<size_t>(kMicroLoopSliceDiv);
 static constexpr size_t kNumLoopLayers = 2;
@@ -42,6 +42,7 @@ class MicroLooperModule : public BaseEffectModule
       PITCH_VOICE,
       PITCH_MIX,
       PITCH_DIRECTION,
+      SPEED_ERROR,
       PARAM_COUNT
     };
 
@@ -59,11 +60,18 @@ class MicroLooperModule : public BaseEffectModule
     void AlternateFootswitchHeldFor1Second() override;
     void AlternateFootswitchPressed() override;
     void AlternateFootswitchDoubleTapped() override;
-    void FootswitchPressed(size_t footswitch_id) override;
-    void FootswitchReleased(size_t footswitch_id) override;
     float GetBrightnessForLED(int led_id) const override;
     bool IsRecording() const;
     void ParameterChanged(int parameter_id) override;
+    void OnMidiClockPulse();
+    void SetClockBeat();
+    inline void SetMidiClockRunning(bool running) {
+        midi_clock_running_ = running;
+        if (!midi_clock_running_) {
+            clock_beat_ = false;
+            midi_pulse_flash_until_ms_ = 0;
+        }
+    }
 
   private:
     void ResetStates(bool preserve_playheads = false);
@@ -81,10 +89,15 @@ class MicroLooperModule : public BaseEffectModule
 
     // Recording state
     bool armed_recording_ = false;
+    bool armed_stop_ = false;
+    bool clock_beat_ = false;
+    bool midi_clock_running_ = false;
+    uint32_t midi_pulse_flash_until_ms_ = 0;
     bool is_recording_ = false;
     bool loop_playing_ = false;
     bool stretch_playing_ = false;
     size_t loop_length_ = 0;
+    size_t main_loop_length_ = 0;
     bool has_committed_loop_ = false;
     size_t recording_layer_ = 0;
 
