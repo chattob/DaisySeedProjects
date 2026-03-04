@@ -12,7 +12,7 @@
         "reset init",
         "gdb_breakpoint_override hard"
       ],
-      "preLaunchTask": "build_and_program_dfu",
+      "preLaunchTask": "program-dfu",
       "preRestartCommands": ["load", "enable breakpoint", "monitor reset"],
       "request": "launch",
       "runToEntryPoint": "main",
