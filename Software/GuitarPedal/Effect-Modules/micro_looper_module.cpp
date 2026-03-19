@@ -55,6 +55,16 @@ static inline float Clamp01(float value) {
     return value;
 }
 
+static inline float ResolveLoopSlice(float slice, int mode) {
+    if (mode == MicroLooperModule::SAMPLER) {
+        return kMicroLoopMinSlice;
+    }
+    if (slice < kMicroLoopMinSlice) {
+        return kMicroLoopMinSlice;
+    }
+    return slice;
+}
+
 static inline size_t ComputeSliceLength(float slice) {
     size_t slice_length = static_cast<size_t>(slice * kMicroLoopMaxSize);
     if (slice_length < N) {
@@ -109,7 +119,10 @@ static inline float ComputePitchRatio(float pitch_voice) {
     return powf(2.0f, pitch_octaves);
 }
 
-static inline size_t ComputeStretchFadeInSamples(float attack) {
+static inline size_t ComputeStretchFadeInSamples(float attack, int mode) {
+    if (mode == MicroLooperModule::SAMPLER && attack <= 0.0f) {
+        return 0;
+    }
     return 1024 + static_cast<size_t>(attack * kStretchFadeInSamples);
 }
 
@@ -777,11 +790,10 @@ void MicroLooperModule::WriteBuffer(float in)
 
 void MicroLooperModule::StartStretching()
 {
+    const int mode = GetParameterAsBinnedValue(LOOP_MODE);
+
     // Latch slice so source sizing stays stable during stretching.
-    stretch_slice_ = GetParameterAsFloat(SLICE);
-    if (stretch_slice_ < kMicroLoopMinSlice) {
-        stretch_slice_ = kMicroLoopMinSlice;
-    }
+    stretch_slice_ = ResolveLoopSlice(GetParameterAsFloat(SLICE), mode);
 
     size_t source_length = ResolveStretchInputLength(is_recording_, recording_layer_, loop_length_, main_loop_length_);
     if (source_length == 0) {
@@ -795,7 +807,9 @@ void MicroLooperModule::StartStretching()
         armed_recording_ = false;
         FinalizeRecording(true);
         is_recording_ = false;
-        loop_playing_ = true;
+        if (mode != SAMPLER) {
+            loop_playing_ = true;
+        }
     }
 
     // Always use streaming mode now
@@ -894,12 +908,9 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
 
     if (m_isEnabled) {
         m_audioLeft = GetParameterAsFloat(IN_MIX) * inL;
-        float slice = GetParameterAsFloat(SLICE);
-        if (slice < kMicroLoopMinSlice) {
-            slice = kMicroLoopMinSlice;
-        }
-        auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
         int mode = GetParameterAsBinnedValue(LOOP_MODE);
+        float slice = ResolveLoopSlice(GetParameterAsFloat(SLICE), mode);
+        auto gains = EnergyCrossfade(GetParameterAsFloat(BALANCE));
         float loop_mix = gains.dry;
         float freeze_mix = gains.wet;
         const bool recording_main_loop = is_recording_ && (recording_layer_ == 0);
@@ -929,6 +940,16 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
             if (!is_stretching_ && loop_length_ >= N && mode == SAMPLER) {
                 StartStretching();
             }
+        }
+
+        // Sampler capture still needs the write head to move when loop playback
+        // is muted, otherwise each input sample overwrites the same slot and the
+        // stretch source never fills.
+        if (mode == SAMPLER && is_recording_ && !loop_playing_) {
+            playing_head_.SetSpeed(1.0f);
+            playing_head_.UpdatePosition(playback_loop_length, playback_slice);
+            loop_harmony_head_.SyncTo(playing_head_, playback_loop_length, 0.0f);
+            prev_wraparound_count_ = playing_head_.GetWrapAroundCount();
         }
 
         if (loop_playing_ || stretch_playing_) {
@@ -1039,12 +1060,16 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                         stretch_harmony_declick_count_--;
                     }
                     if (stretch_fade_in_count_ > 0) {
-                        size_t fade_in_samples = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
-                        float t = (fade_in_samples - stretch_fade_in_count_)
-                                / static_cast<float>(fade_in_samples);
-                        stretch_sample *= t;
-                        stretch_harmony_sample *= t;
-                        stretch_fade_in_count_--;
+                        size_t fade_in_samples = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK), mode);
+                        if (fade_in_samples == 0) {
+                            stretch_fade_in_count_ = 0;
+                        } else {
+                            float t = (fade_in_samples - stretch_fade_in_count_)
+                                    / static_cast<float>(fade_in_samples);
+                            stretch_sample *= t;
+                            stretch_harmony_sample *= t;
+                            stretch_fade_in_count_--;
+                        }
                     }
                     float stretch_mix_sample = (stretch_sample * harmony_gains.dry)
                                              + (stretch_harmony_sample * harmony_gains.wet);
@@ -1145,7 +1170,6 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                     }
                     FinalizeRecording(true);
                     is_recording_ = false;
-                    loop_playing_ = true;
                 }
                 prev_wraparound_count_ = updated_wraparound_count;
             } else if (stretch_playing_) {
@@ -1182,6 +1206,8 @@ bool MicroLooperModule::Poll() {
 
         if (immediate_start) {
             int mode = GetParameterAsBinnedValue(LOOP_MODE);
+            const bool keep_loop_playing = (mode == SAMPLER) ? loop_playing_ : true;
+            const bool keep_stretch_playing = stretch_playing_;
             bool overdub_existing_loop = (mode == OVERDUB) && has_committed_loop_;
             bool preserve_playheads = (mode == OVERDUB) && overdub_existing_loop;
             if (overdub_existing_loop) {
@@ -1205,7 +1231,8 @@ bool MicroLooperModule::Poll() {
             loop_harmony_head_.SyncTo(playing_head_, sync_length, static_cast<float>(harmony_sync_samples_));
             armed_recording_ = false;
             is_recording_ = true;
-            loop_playing_ = true;
+            loop_playing_ = keep_loop_playing;
+            stretch_playing_ = keep_stretch_playing;
             prev_wraparound_count_ = playing_head_.GetWrapAroundCount();
         }
     }
@@ -1234,7 +1261,9 @@ bool MicroLooperModule::Poll() {
                 }
                 FinalizeRecording(true);
                 is_recording_ = false;
-                loop_playing_ = true;
+                if (GetParameterAsBinnedValue(LOOP_MODE) != SAMPLER) {
+                    loop_playing_ = true;
+                }
             }
         }
     }
@@ -1466,11 +1495,15 @@ bool MicroLooperModule::Poll() {
                                 stretch_fade_in_count_ = 0;
                             } else {
                                 stretch_swap_fade_count_ = 0;
-                                stretch_fade_in_count_ = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
+                                const int mode = GetParameterAsBinnedValue(LOOP_MODE);
+                                stretch_fade_in_count_ = ComputeStretchFadeInSamples(
+                                    GetParameterAsFloat(ATTACK), mode);
                             }
                             active_stretch_buffer_ = write_stretch_buffer_;
                             use_stretched_buffer_ = true;
-                            stretch_playing_ = true;
+                            if (GetParameterAsBinnedValue(LOOP_MODE) != SAMPLER) {
+                                stretch_playing_ = true;
+                            }
                         }
                     }
                     if (s_synth_count % 2 == 0) {
@@ -1591,11 +1624,15 @@ bool MicroLooperModule::Poll() {
                         stretch_fade_in_count_ = 0;
                     } else {
                         stretch_swap_fade_count_ = 0;
-                        stretch_fade_in_count_ = ComputeStretchFadeInSamples(GetParameterAsFloat(ATTACK));
+                        const int mode = GetParameterAsBinnedValue(LOOP_MODE);
+                        stretch_fade_in_count_ = ComputeStretchFadeInSamples(
+                            GetParameterAsFloat(ATTACK), mode);
                     }
                     active_stretch_buffer_ = write_stretch_buffer_;
                     use_stretched_buffer_ = true;
-                    stretch_playing_ = true;
+                    if (GetParameterAsBinnedValue(LOOP_MODE) != SAMPLER) {
+                        stretch_playing_ = true;
+                    }
                 }
 
                 is_stretching_ = false;
@@ -1628,9 +1665,9 @@ float MicroLooperModule::GetBrightnessForLED(int led_id) const
     int mode = GetParameterAsBinnedValue(LOOP_MODE);
     if (mode == SAMPLER) {
         if (led_id == 0) {
-            return stretch_playing_ ? 1.0f : 0.0f;
-        } else {
             return loop_playing_ ? 1.0f : 0.0f;
+        } else {
+            return stretch_playing_ ? 1.0f : 0.0f;
         }
     } else {
         if (led_id == 0) {

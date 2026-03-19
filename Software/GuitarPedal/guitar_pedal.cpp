@@ -386,7 +386,7 @@ int main(void) {
     g_effects.reverb        = new ReverbModule();
     g_effects.pitchshifter  = new PitchShifterModule();
 
-    g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::SAMPLER);
+    g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::OVERDUB);
     g_effects.micro_looper->SetParameterAsFloat(MicroLooperModule::IN_MIX, 1.0f);
 
     tape->SetParameterAsMagnitude(DelayModule::DELAY_LPF, 1.0f);
@@ -746,6 +746,7 @@ int main(void) {
                     if (switchReleased) {
                         g_effects.micro_looper->SetParameterAsBinnedValue(MicroLooperModule::LOOP_MODE, MicroLooperModule::OVERDUB);
                     }
+                    break;
                 case 7:
                     if (switchPressed) {
                         g_effects.micro_looper->SetEnabled(false);
