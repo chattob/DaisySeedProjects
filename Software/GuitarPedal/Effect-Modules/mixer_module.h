@@ -18,9 +18,8 @@ public:
     ~MixerModule() override = default;
 
     void Init(float sample_rate) override;
-    void ProcessStereoBlock(AudioHandle::InputBuffer in,
-                           AudioHandle::OutputBuffer out,
-                           size_t size) override;
+    void BlockPreProcessing(size_t size) override;
+    void ProcessStereo(float inL, float inR) override;
 
     // Capture signal into a channel buffer (call at any point in chain)
     void CaptureChannel(int channel, AudioHandle::InputBuffer in, size_t size);
@@ -46,6 +45,11 @@ private:
     float m_bufferR[NUM_CHANNELS][MAX_BLOCK_SIZE];
     bool m_channelCaptured[NUM_CHANNELS];
     size_t m_blockSize = 0;
+    size_t m_sampleIndex = 0;
+    float m_levels[NUM_CHANNELS] = {1.0f, 0.0f, 0.0f, 0.0f};
+    float m_master = 1.0f;
+    float m_panL = 1.0f;
+    float m_panR = 1.0f;
 };
 
 } // namespace bkshepherd

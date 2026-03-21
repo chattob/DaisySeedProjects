@@ -306,58 +306,45 @@ float DistortionModule::ProcessSample(float input, int clippingType, float inten
     return distorted;
 }
 
-void DistortionModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    if (m_isEnabled) {
-        const int clippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
-        const float intensity = GetParameterAsFloat(INTENSITY);
-        const float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
-        const float mix = GetParameterAsFloat(MIX);
+void DistortionModule::BlockPreProcessing(size_t size) {
+    (void)size;
 
-        // constant-power crossfade
-        const float a = sqrtf(1.0f - mix);
-        const float b = sqrtf(mix);
-
-        for (size_t i = 0; i < size; i++) {
-            float distorted = ProcessSample(in[0][i], clippingType, intensity, 0);
-
-            const float clean = in[0][i];
-            const float wet   = distorted * level;
-
-            out[0][i]  = a * clean + b * wet;
-            out[1][i] = out[0][i];
-        }
-    }
+    const float mix = GetParameterAsFloat(MIX);
+    m_cachedClippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
+    m_cachedIntensity = GetParameterAsFloat(INTENSITY);
+    m_cachedLevel = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
+    m_cachedDryGain = sqrtf(1.0f - mix);
+    m_cachedWetGain = sqrtf(mix);
 }
 
-void DistortionModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    if (m_isEnabled) {
-        const int clippingType = GetParameterAsBinnedValue(DIST_TYPE) - 1;
-        const float intensity = GetParameterAsFloat(INTENSITY);
-        const float level = m_levelMin + (GetParameterAsFloat(LEVEL) * (m_levelMax - m_levelMin));
-        const float mix = GetParameterAsFloat(MIX);
-
-        // Constant-power crossfade.
-        const float a = sqrtf(1.0f - mix);
-        const float b = sqrtf(mix);
-
-        for (size_t i = 0; i < size; i++) {
-            float distortedL = ProcessSample(in[0][i], clippingType, intensity, 0);
-            float distortedR = ProcessSample(in[1][i], clippingType, intensity, 1);
-
-            const float cleanL = in[0][i];
-            const float cleanR = in[1][i];
-            const float wetL = distortedL * level;
-            const float wetR = distortedR * level;
-
-            out[0][i] = a * cleanL + b * wetL;
-            out[1][i] = a * cleanR + b * wetR;
-        }
-    } else {
-        for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i];
-            out[1][i] = in[1][i];
-        }
+void DistortionModule::ProcessMono(float in) {
+    if (!m_isEnabled) {
+        m_audioLeft = in;
+        m_audioRight = in;
+        return;
     }
+
+    float distorted = ProcessSample(in, m_cachedClippingType, m_cachedIntensity, 0);
+    const float wet = distorted * m_cachedLevel;
+    m_audioLeft = m_cachedDryGain * in + m_cachedWetGain * wet;
+    m_audioRight = m_audioLeft;
+}
+
+void DistortionModule::ProcessStereo(float inL, float inR) {
+    if (!m_isEnabled) {
+        m_audioLeft = inL;
+        m_audioRight = inR;
+        return;
+    }
+
+    float distortedL = ProcessSample(inL, m_cachedClippingType, m_cachedIntensity, 0);
+    float distortedR = ProcessSample(inR, m_cachedClippingType, m_cachedIntensity, 1);
+
+    const float wetL = distortedL * m_cachedLevel;
+    const float wetR = distortedR * m_cachedLevel;
+
+    m_audioLeft = m_cachedDryGain * inL + m_cachedWetGain * wetL;
+    m_audioRight = m_cachedDryGain * inR + m_cachedWetGain * wetR;
 }
 
 float DistortionModule::GetBrightnessForLED(int led_id) const {

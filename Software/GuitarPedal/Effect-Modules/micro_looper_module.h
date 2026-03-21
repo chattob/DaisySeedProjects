@@ -20,8 +20,13 @@ static constexpr size_t kStretchClearChunk = 128;
 static constexpr float kMicroLoopSliceDiv = 12;
 static constexpr float kMicroLoopMinSlice = 1.0f / kMicroLoopSliceDiv;
 static constexpr size_t kMicroLoopMaxSize = N * static_cast<size_t>(kMicroLoopSliceDiv);
+static constexpr size_t kSamplerStretchSourceLength = N + H_IN; // 1.125N
+static constexpr float kSamplerStretchSlice =
+    static_cast<float>(kSamplerStretchSourceLength) / static_cast<float>(kMicroLoopMaxSize);
 static constexpr size_t kNumLoopLayers = 2;
 static_assert(kMicroLoopMaxSize >= N, "kMicroLoopMaxSize must be >= N");
+static_assert(kSamplerStretchSourceLength <= kMicroLoopMaxSize,
+              "kSamplerStretchSourceLength must fit in the loop buffer");
 // Ensure stretched buffer size is a multiple of H_OUT for proper circular OLA
 static constexpr size_t kMicroLoopMaxStretchedSize = (((kMicroLoopMaxSize - N) / H_IN) + 1) * STRETCH * H_OUT;
 

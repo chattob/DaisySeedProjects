@@ -289,15 +289,30 @@ static void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer
     g_effects.mixer->ResetCaptures();
     g_effects.mixer->CaptureChannel(1, in, size);
 
+    const bool isStereo = g_hardware.SupportsStereo();
+
     if (!g_effects.chain.empty() && (g_bypass.effectOn || g_crossfade.isCrossFading)) {
         for (auto* fx : g_effects.chain) {
             if (!fx) continue;
             if (!fx->IsEnabled()) continue;
-            if (g_hardware.SupportsStereo()) {
-                fx->ProcessStereoBlock(crossFadeTarget, crossFadeTarget, size);
-            } else {
-                fx->ProcessMonoBlock(crossFadeTarget, crossFadeTarget, size);
+            fx->BlockPreProcessing(size);
+        }
+
+        for (size_t i = 0; i < size; i++) {
+            float sampleL = crossFadeTarget[0][i];
+            float sampleR = isStereo ? crossFadeTarget[1][i] : sampleL;
+
+            for (auto* fx : g_effects.chain) {
+                if (!fx) continue;
+                if (!fx->IsEnabled()) continue;
+
+                fx->ProcessStereo(sampleL, sampleR);
+                sampleL = fx->GetAudioLeft();
+                sampleR = isStereo ? fx->GetAudioRight() : fx->GetAudioLeft();
             }
+
+            crossFadeTarget[0][i] = sampleL;
+            crossFadeTarget[1][i] = sampleR;
         }
     }
 

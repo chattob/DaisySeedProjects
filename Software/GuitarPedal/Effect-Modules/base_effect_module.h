@@ -224,17 +224,16 @@ class BaseEffectModule {
     */
     void SetParameterAsBinnedValue(int parameter_id, int value);
 
-    /** Processes the Effect in Mono for a single sample.  This should only be called once per sample. Also, if this is called, don't
-     call ProcessStereo too. \param in Input sample.
+    /** Performs control-rate preparation once per audio block before per-sample processing begins.
+        \param size Number of samples in the upcoming audio block.
     */
-    virtual void ProcessMono(float in);
-    virtual void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size);
+    virtual void BlockPreProcessing(size_t size);
 
-    /** Processes the Effect in Stereo for a single left & right sample.  This should only be called once per sample. Also, if this is
-     called, don't call ProcessMono too. \param inL, inR Input sample Left and Right.
-    */
+    /** Processes the Effect in Mono for a single sample. */
+    virtual void ProcessMono(float in);
+
+    /** Processes the Effect in Stereo for a single left & right sample. */
     virtual void ProcessStereo(float inL, float inR);
-    virtual void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size);
 
     /** Used to exectute polling operations in the main.
     */

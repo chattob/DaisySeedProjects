@@ -368,33 +368,18 @@ void BaseEffectModule::SetParameterAsBinnedValue(int parameter_id, int value) {
     SetParameterRaw(parameter_id, value - 1);
 }
 
+void BaseEffectModule::BlockPreProcessing(size_t size) {
+    (void)size;
+}
+
 void BaseEffectModule::ProcessMono(float in) {
     m_audioLeft = in;
     m_audioRight = in;
 }
 
-void BaseEffectModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        float input = in[0][i];
-        ProcessMono(input);
-        out[0][i] = m_audioLeft;
-        out[1][i] = m_audioLeft;
-    }
-}
-
 void BaseEffectModule::ProcessStereo(float inL, float inR) {
     m_audioLeft = inL;
     m_audioRight = inR;
-}
-
-void BaseEffectModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        float inputLeft = in[0][i];
-        float inputRight = in[1][i];
-        ProcessStereo(inputLeft, inputRight);
-        out[0][i] = m_audioLeft;
-        out[1][i] = m_audioRight;
-    }
 }
 
 bool BaseEffectModule::Poll() {

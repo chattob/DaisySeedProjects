@@ -114,40 +114,42 @@ void MixerModule::CaptureChannel(int channel, AudioHandle::InputBuffer in, size_
     m_channelCaptured[channel] = true;
 }
 
-void MixerModule::ProcessStereoBlock(AudioHandle::InputBuffer in,
-                                     AudioHandle::OutputBuffer out,
-                                     size_t size) {
-    // Auto-capture input as channel 0 (wet signal from previous effects)
-    CaptureChannel(0, in, size);
+void MixerModule::BlockPreProcessing(size_t size) {
+    m_blockSize = (size < MAX_BLOCK_SIZE) ? size : MAX_BLOCK_SIZE;
+    m_sampleIndex = 0;
 
-    float levels[NUM_CHANNELS] = {
-        GetParameterAsFloat(CH1_LEVEL),
-        GetParameterAsFloat(CH2_LEVEL),
-        GetParameterAsFloat(CH3_LEVEL),
-        GetParameterAsFloat(CH4_LEVEL)
-    };
-    float master = GetParameterAsFloat(MASTER_LEVEL);
+    m_levels[0] = GetParameterAsFloat(CH1_LEVEL);
+    m_levels[1] = GetParameterAsFloat(CH2_LEVEL);
+    m_levels[2] = GetParameterAsFloat(CH3_LEVEL);
+    m_levels[3] = GetParameterAsFloat(CH4_LEVEL);
+    m_master = GetParameterAsFloat(MASTER_LEVEL);
+
     float pan = GetParameterAsFloat(PAN);
     if (pan < 0.0f) {
         pan = 0.0f;
     } else if (pan > 1.0f) {
         pan = 1.0f;
     }
-    float panL = (pan <= 0.5f) ? 1.0f : 2.0f * (1.0f - pan);
-    float panR = (pan >= 0.5f) ? 1.0f : 2.0f * pan;
+    m_panL = (pan <= 0.5f) ? 1.0f : 2.0f * (1.0f - pan);
+    m_panR = (pan >= 0.5f) ? 1.0f : 2.0f * pan;
+}
 
-    for (size_t i = 0; i < size; i++) {
-        float sumL = 0.0f;
-        float sumR = 0.0f;
+void MixerModule::ProcessStereo(float inL, float inR) {
+    float sumL = inL * m_levels[0];
+    float sumR = inR * m_levels[0];
+    const size_t sampleIndex = m_sampleIndex;
 
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            if (m_channelCaptured[ch]) {
-                sumL += m_bufferL[ch][i] * levels[ch];
-                sumR += m_bufferR[ch][i] * levels[ch];
-            }
+    for (int ch = 1; ch < NUM_CHANNELS; ch++) {
+        if (m_channelCaptured[ch] && sampleIndex < m_blockSize) {
+            sumL += m_bufferL[ch][sampleIndex] * m_levels[ch];
+            sumR += m_bufferR[ch][sampleIndex] * m_levels[ch];
         }
+    }
 
-        out[0][i] = sumL * master * panL;
-        out[1][i] = sumR * master * panR;
+    m_audioLeft = sumL * m_master * m_panL;
+    m_audioRight = sumR * m_master * m_panR;
+
+    if (m_sampleIndex < m_blockSize) {
+        ++m_sampleIndex;
     }
 }

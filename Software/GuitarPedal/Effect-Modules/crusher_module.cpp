@@ -103,62 +103,21 @@ void CrusherModule::Init(float sample_rate) {
     m_crunchIndex = 0;
 }
 
-void CrusherModule::ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    float level = GetParameterAsFloat(LEVEL);
+void CrusherModule::BlockPreProcessing(size_t size) {
+    (void)size;
+
     float cutoff = m_cutoffMin + GetParameterAsFloat(CUTOFF) * (m_cutoffMax - m_cutoffMin);
     float bits = (float)GetParameterAsBinnedValue(BITS);
     float t = GetParameterAsFloat(RATE);     // 0..1
     float rate = m_rateMin * powf(m_rateMax / m_rateMin, t);
     float jitter = GetParameterAsFloat(JITTER);
     float q = m_filterQMin + GetParameterAsFloat(FILTER_Q) * (m_filterQMax - m_filterQMin);
-    float sub = GetParameterAsFloat(CRUNCH_SUB);
+    auto gains = EnergyCrossfade(GetParameterAsFloat(MIX));
 
-    m_lpFilter[0].config(cutoff, m_rateMax, q);
-
-    m_bitcrusherL.setNumberOfBits(bits);
-    m_bitcrusherL.setTargetSampleRate(rate);
-    m_bitcrusherL.setJitter(jitter);
-
-    for (size_t i = 0; i < size; i++) {
-        float inL = in[0][i];
-        float crushed = m_bitcrusherL.Process(inL);
-        float crunch = crushed - inL;
-        m_crunchBuf[m_crunchIndex] = crunch;
-        if (m_crunchIndex >= static_cast<int>(resample_factor) - 1) {
-            std::span<const float, resample_factor> in_chunk(m_crunchBuf, resample_factor);
-            float decimated = m_crunchDecimator(in_chunk);
-            if (sub > 0.0f) {
-                m_octaveGen.update(decimated);
-                auto up = m_crunchInterpolator(m_octaveGen.down2());
-                for (size_t j = 0; j < resample_factor; ++j) {
-                    m_crunchUp[j] = up[j];
-                }
-            } else {
-                for (size_t j = 0; j < resample_factor; ++j) {
-                    m_crunchUp[j] = 0.0f;
-                }
-            }
-            m_crunchIndex = 0;
-        } else {
-            m_crunchIndex++;
-        }
-
-        float sub_sample = m_crunchUp[m_crunchIndex];
-        float wet = crushed + sub * sub_sample;
-        out[0][i] = m_lpFilter[0](wet) * level;
-        out[1][i] = out[0][i];
-    }
-}
-
-void CrusherModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    float level = GetParameterAsFloat(LEVEL);
-    float cutoff = m_cutoffMin + GetParameterAsFloat(CUTOFF) * (m_cutoffMax - m_cutoffMin);
-    float bits = (float)GetParameterAsBinnedValue(BITS);
-    volatile float t = GetParameterAsFloat(RATE);     // 0..1
-    float rate = m_rateMin * powf(m_rateMax / m_rateMin, t);
-    float jitter = GetParameterAsFloat(JITTER);
-    float q = m_filterQMin + GetParameterAsFloat(FILTER_Q) * (m_filterQMax - m_filterQMin);
-    float sub = GetParameterAsFloat(CRUNCH_SUB);
+    m_cachedLevel = GetParameterAsFloat(LEVEL);
+    m_cachedSub = GetParameterAsFloat(CRUNCH_SUB);
+    m_cachedDryGain = gains.dry;
+    m_cachedWetGain = gains.wet;
 
     m_lpFilter[0].config(cutoff, m_rateMax, q);
     m_lpFilter[1].config(cutoff, m_rateMax, q);
@@ -169,42 +128,78 @@ void CrusherModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle:
     m_bitcrusherR.setNumberOfBits(bits);
     m_bitcrusherR.setTargetSampleRate(rate);
     m_bitcrusherR.setJitter(jitter);
+}
 
-    auto gains = EnergyCrossfade(GetParameterAsFloat(MIX));
-
-    for (size_t i = 0; i < size; i++) {
-        float inL = in[0][i];
-        float inR = in[1][i];
-        float outL = m_bitcrusherL.Process(inL);
-        float outR = m_bitcrusherR.Process(inR);
-
-        float crunchMono = 0.5f * ((outL - inL) + (outR - inR));
-
-        m_crunchBuf[m_crunchIndex] = crunchMono;
-        if (m_crunchIndex >= static_cast<int>(resample_factor) - 1) {
-            std::span<const float, resample_factor> in_chunk(m_crunchBuf, resample_factor);
-            float decimated = m_crunchDecimator(in_chunk);
-            if (sub > 0.0f) {
-                m_octaveGen.update(decimated);
-                auto up = m_crunchInterpolator(m_octaveGen.down1());
-                for (size_t j = 0; j < resample_factor; ++j) {
-                    m_crunchUp[j] = up[j];
-                }
-            } else {
-                for (size_t j = 0; j < resample_factor; ++j) {
-                    m_crunchUp[j] = 0.0f;
-                }
-            }
-            m_crunchIndex = 0;
-        } else {
-            m_crunchIndex++;
-        }
-
-        float sub_sample = m_crunchUp[m_crunchIndex];
-        float wetL = outL + sub * sub_sample;
-        float wetR = outR + sub * sub_sample;
-
-        out[0][i] = (gains.dry * inL + gains.wet * m_lpFilter[0](wetL)) * level;
-        out[1][i] = (gains.dry * inR + gains.wet * m_lpFilter[1](wetR)) * level;
+void CrusherModule::ProcessMono(float in) {
+    if (!m_isEnabled) {
+        m_audioLeft = in;
+        m_audioRight = in;
+        return;
     }
+
+    float crushed = m_bitcrusherL.Process(in);
+    float crunch = crushed - in;
+    m_crunchBuf[m_crunchIndex] = crunch;
+    if (m_crunchIndex >= static_cast<int>(resample_factor) - 1) {
+        std::span<const float, resample_factor> in_chunk(m_crunchBuf, resample_factor);
+        float decimated = m_crunchDecimator(in_chunk);
+        if (m_cachedSub > 0.0f) {
+            m_octaveGen.update(decimated);
+            auto up = m_crunchInterpolator(m_octaveGen.down2());
+            for (size_t j = 0; j < resample_factor; ++j) {
+                m_crunchUp[j] = up[j];
+            }
+        } else {
+            for (size_t j = 0; j < resample_factor; ++j) {
+                m_crunchUp[j] = 0.0f;
+            }
+        }
+        m_crunchIndex = 0;
+    } else {
+        m_crunchIndex++;
+    }
+
+    float sub_sample = m_crunchUp[m_crunchIndex];
+    float wet = crushed + m_cachedSub * sub_sample;
+    m_audioLeft = m_lpFilter[0](wet) * m_cachedLevel;
+    m_audioRight = m_audioLeft;
+}
+
+void CrusherModule::ProcessStereo(float inL, float inR) {
+    if (!m_isEnabled) {
+        m_audioLeft = inL;
+        m_audioRight = inR;
+        return;
+    }
+
+    float outL = m_bitcrusherL.Process(inL);
+    float outR = m_bitcrusherR.Process(inR);
+
+    float crunchMono = 0.5f * ((outL - inL) + (outR - inR));
+    m_crunchBuf[m_crunchIndex] = crunchMono;
+    if (m_crunchIndex >= static_cast<int>(resample_factor) - 1) {
+        std::span<const float, resample_factor> in_chunk(m_crunchBuf, resample_factor);
+        float decimated = m_crunchDecimator(in_chunk);
+        if (m_cachedSub > 0.0f) {
+            m_octaveGen.update(decimated);
+            auto up = m_crunchInterpolator(m_octaveGen.down1());
+            for (size_t j = 0; j < resample_factor; ++j) {
+                m_crunchUp[j] = up[j];
+            }
+        } else {
+            for (size_t j = 0; j < resample_factor; ++j) {
+                m_crunchUp[j] = 0.0f;
+            }
+        }
+        m_crunchIndex = 0;
+    } else {
+        m_crunchIndex++;
+    }
+
+    float sub_sample = m_crunchUp[m_crunchIndex];
+    float wetL = outL + m_cachedSub * sub_sample;
+    float wetR = outR + m_cachedSub * sub_sample;
+
+    m_audioLeft = (m_cachedDryGain * inL + m_cachedWetGain * m_lpFilter[0](wetL)) * m_cachedLevel;
+    m_audioRight = (m_cachedDryGain * inR + m_cachedWetGain * m_lpFilter[1](wetR)) * m_cachedLevel;
 }

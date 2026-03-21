@@ -38,8 +38,9 @@ class DistortionModule : public BaseEffectModule {
 
     void Init(float sample_rate) override;
     void ParameterChanged(int parameter_id) override;
-    void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)  override;
-    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
+    void BlockPreProcessing(size_t size) override;
+    void ProcessMono(float in) override;
+    void ProcessStereo(float inL, float inR) override;
     float GetBrightnessForLED(int led_id) const override;
 
   private:
@@ -67,6 +68,11 @@ class DistortionModule : public BaseEffectModule {
     float m_os_buffer[2][oversamplingFactor];  // per-channel workspace for oversampling
     float m_env[2] = {0.0f, 0.0f};
     float m_pre_cutoff[2] = {preFilterCutoffBase, preFilterCutoffBase};
+    int m_cachedClippingType = 0;
+    float m_cachedIntensity = 0.0f;
+    float m_cachedLevel = 1.0f;
+    float m_cachedDryGain = 1.0f;
+    float m_cachedWetGain = 0.0f;
 };
 
 static const float kDriveComp[128] = {

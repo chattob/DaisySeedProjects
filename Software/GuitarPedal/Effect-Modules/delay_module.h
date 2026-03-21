@@ -169,7 +169,8 @@ class DelayModule : public BaseEffectModule {
     void UpdateLEDRate();
     void ParameterChanged(int parameter_id) override;
     void ProcessModulation(size_t size);
-    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
+    void BlockPreProcessing(size_t size) override;
+    void ProcessStereo(float inL, float inR) override;
     void SetTempo(uint32_t bpm) override;
     float GetBrightnessForLED(int led_id) const override;
 
@@ -209,6 +210,8 @@ class DelayModule : public BaseEffectModule {
     // Oscillator for blinking tempo LED
     Oscillator led_osc;
     float m_LEDValue;
+    int m_cachedDelayType = DELAY_TYPE_FORWARD;
+    bool m_cachedApplySpread = false;
 };
 } // namespace bkshepherd
 #endif

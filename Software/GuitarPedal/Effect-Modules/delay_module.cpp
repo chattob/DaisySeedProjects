@@ -357,82 +357,74 @@ void DelayModule::ProcessModulation(size_t size) {
     }
 }
 
-void DelayModule::ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    if (m_isEnabled) {
-        m_LEDValue = led_osc.Process(); // update the tempo LED
-
-        // Calculate the effect
-        int delayType = GetParameterAsBinnedValue(DELAY_TYPE);
-
-        float timeParam = GetParameterAsFloat(0);
-
-        delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-        delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
-
-        delayLeft.feedback = GetParameterAsFloat(1);
-        delayRight.feedback = GetParameterAsFloat(1);
-        if (delayType == DELAY_TYPE_REVERSE || delayType == DELAY_TYPE_REVERSE_OCT) {
-            delayLeft.reverseMode = true;
-            delayRight.reverseMode = true;
-        } else {
-            delayLeft.reverseMode = false;
-            delayRight.reverseMode = false;
-        }
-        if (delayType == DELAY_TYPE_OCTAVE || delayType == DELAY_TYPE_REVERSE_OCT || delayType == DELAY_TYPE_DUAL_OCT) {
-            delayLeft.del->setOctave(true);
-            delayRight.del->setOctave(true);
-        } else {
-            delayLeft.del->setOctave(false);
-            delayRight.del->setOctave(false);
-        }
-        if (delayType == DELAY_TYPE_DUAL || delayType == DELAY_TYPE_DUAL_OCT) {
-            delayLeft.dual_delay = true;
-            delayRight.dual_delay = true;
-        } else {
-            delayLeft.dual_delay = false;
-            delayRight.dual_delay = false;
-        }
-
-        if (delayType == DELAY_TYPE_DUAL || delayType == DELAY_TYPE_DUAL_OCT) { // If dual delay is turned on, spread controls the L/R panning of the two delays
-            delayLeft.level = GetParameterAsFloat(6) + 1.0;
-            delayRight.level = 1.0 - GetParameterAsFloat(6);
-
-            delayLeft.level_reverse = 1.0 - GetParameterAsFloat(6);
-            delayRight.level_reverse = GetParameterAsFloat(6) + 1.0;
-
-        } else { // If dual delay is off reset the levels to normal, spread controls the amount of additional delay applied to the right
-                // channel
-            delayLeft.level = 1.0;
-            delayRight.level = 1.0;
-            delayLeft.level_reverse = 1.0;
-            delayRight.level_reverse = 1.0;
-        }
-
-        delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * GetParameterAsFloat(6);
-
-        // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
-        // processing?
-        ProcessModulation(size);
-
-        for (size_t i = 0; i < size; i++) {
-            float delLeft_out = delayLeft.Process(in[0][i]);
-            float delRight_out = delayRight.Process(in[1][i]);
-
-            // Calculate any delay spread
-            float delSpread_out = delaySpread.Process(delRight_out);
-            if (GetParameterRaw(6) > 0 && delayType != 4 && delayType != 5) {
-                delRight_out = delSpread_out;
-            }
-
-            out[0][i] = delLeft_out * delayWetMix + in[0][i] * delayDryMix;
-            out[1][i] = delRight_out * delayWetMix + in[1][i] * delayDryMix;
-        }
-    } else {
-        for (size_t i = 0; i < size; i++) {
-            out[0][i] = in[0][i];
-            out[1][i] = in[1][i];
-        }
+void DelayModule::BlockPreProcessing(size_t size) {
+    if (!m_isEnabled) {
+        return;
     }
+
+    m_LEDValue = led_osc.Process(); // update the tempo LED
+    m_cachedDelayType = GetParameterAsBinnedValue(DELAY_TYPE);
+
+    float timeParam = GetParameterAsFloat(DELAY_TIME);
+    delayLeft.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+    delayRight.delayTarget = m_delaySamplesMin + (m_delaySamplesMax - m_delaySamplesMin) * timeParam;
+
+    delayLeft.feedback = GetParameterAsFloat(D_FEEDBACK);
+    delayRight.feedback = GetParameterAsFloat(D_FEEDBACK);
+
+    bool reverseMode = (m_cachedDelayType == DELAY_TYPE_REVERSE || m_cachedDelayType == DELAY_TYPE_REVERSE_OCT);
+    delayLeft.reverseMode = reverseMode;
+    delayRight.reverseMode = reverseMode;
+
+    bool octaveMode = (m_cachedDelayType == DELAY_TYPE_OCTAVE || m_cachedDelayType == DELAY_TYPE_REVERSE_OCT
+                       || m_cachedDelayType == DELAY_TYPE_DUAL_OCT);
+    delayLeft.del->setOctave(octaveMode);
+    delayRight.del->setOctave(octaveMode);
+
+    bool dualDelay = (m_cachedDelayType == DELAY_TYPE_DUAL || m_cachedDelayType == DELAY_TYPE_DUAL_OCT);
+    delayLeft.dual_delay = dualDelay;
+    delayRight.dual_delay = dualDelay;
+
+    float spread = GetParameterAsFloat(D_SPREAD);
+    if (dualDelay) {
+        delayLeft.level = spread + 1.0f;
+        delayRight.level = 1.0f - spread;
+        delayLeft.level_reverse = 1.0f - spread;
+        delayRight.level_reverse = spread + 1.0f;
+    } else {
+        delayLeft.level = 1.0f;
+        delayRight.level = 1.0f;
+        delayLeft.level_reverse = 1.0f;
+        delayRight.level_reverse = 1.0f;
+    }
+
+    delaySpread.delayTarget = m_delaySpreadMin + (m_delaySpreadMax - m_delaySpreadMin) * spread;
+    m_cachedApplySpread = (GetParameterRaw(D_SPREAD) > 0)
+                          && m_cachedDelayType != DELAY_TYPE_REVERSE_OCT
+                          && m_cachedDelayType != DELAY_TYPE_DUAL;
+
+    // Modulation, this overwrites any previous parameter settings for the modulated param - TODO Better way to do this for less
+    // processing?
+    ProcessModulation(size);
+}
+
+void DelayModule::ProcessStereo(float inL, float inR) {
+    if (!m_isEnabled) {
+        m_audioLeft = inL;
+        m_audioRight = inR;
+        return;
+    }
+
+    float delLeft_out = delayLeft.Process(inL);
+    float delRight_out = delayRight.Process(inR);
+
+    float delSpread_out = delaySpread.Process(delRight_out);
+    if (m_cachedApplySpread) {
+        delRight_out = delSpread_out;
+    }
+
+    m_audioLeft = delLeft_out * delayWetMix + inL * delayDryMix;
+    m_audioRight = delRight_out * delayWetMix + inR * delayDryMix;
 }
 
 // Set the delay time from the tap tempo  TODO: Currently the tap tempo led isn't set to delay time on pedal boot up, how to do this?

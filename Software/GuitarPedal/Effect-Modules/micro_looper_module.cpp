@@ -57,7 +57,7 @@ static inline float Clamp01(float value) {
 
 static inline float ResolveLoopSlice(float slice, int mode) {
     if (mode == MicroLooperModule::SAMPLER) {
-        return kMicroLoopMinSlice;
+        return kSamplerStretchSlice;
     }
     if (slice < kMicroLoopMinSlice) {
         return kMicroLoopMinSlice;
@@ -937,7 +937,7 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
         // Write to buffer BEFORE updating recording head position
         if (is_recording_) {
             WriteBuffer(inL);
-            if (!is_stretching_ && loop_length_ >= N && mode == SAMPLER) {
+            if (!is_stretching_ && loop_length_ >= kSamplerStretchSourceLength && mode == SAMPLER) {
                 StartStretching();
             }
         }

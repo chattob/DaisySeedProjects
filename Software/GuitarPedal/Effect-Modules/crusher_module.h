@@ -106,8 +106,9 @@ class CrusherModule : public BaseEffectModule {
     };
 
     void Init(float sample_rate) override;
-    void ProcessMonoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
-    void ProcessStereoBlock(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) override;
+    void BlockPreProcessing(size_t size) override;
+    void ProcessMono(float in) override;
+    void ProcessStereo(float inL, float inR) override;
 
   private:
     Bitcrusher m_bitcrusherL;
@@ -125,6 +126,10 @@ class CrusherModule : public BaseEffectModule {
     float m_cutoffMax;
     float m_filterQMin;
     float m_filterQMax;
+    float m_cachedLevel = 1.0f;
+    float m_cachedSub = 0.0f;
+    float m_cachedDryGain = 0.0f;
+    float m_cachedWetGain = 1.0f;
 
     cycfi::q::lowpass m_lpFilter[2];
 };
