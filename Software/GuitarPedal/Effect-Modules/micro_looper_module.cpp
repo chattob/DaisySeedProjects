@@ -44,6 +44,7 @@ constexpr uint32_t kRecordLedWrapBlinkMs = 380;
 constexpr uint32_t kMidiSyncWaitBlinkMs = 50;
 constexpr uint32_t kMidiPulseFlashMs = 12;
 constexpr size_t kStretchWorkChunkSamples = 128;
+constexpr float kSamplerStretchBounceProbability = 0.7f;
 
 static inline float Clamp01(float value) {
     if (value < 0.0f) {
@@ -1075,28 +1076,40 @@ void MicroLooperModule::ProcessStereo(float inL, float inR)
                                              + (stretch_harmony_sample * harmony_gains.wet);
                     m_audioLeft += stretch_mix_sample * freeze_mix;
 
-                    bool bounced = false;
+                    bool boundary_hit = false;
                     size_t stretch_wraparound_count = stretch_playing_head_.GetWrapAroundCount();
                     if (stretch_len >= kStretchMinPingPongLength) {
-                        bounced = stretch_playing_head_.UpdatePositionPingPong(stretch_len);
+                        if (mode == SAMPLER) {
+                            boundary_hit = stretch_playing_head_.UpdatePositionRandomBounce(
+                                stretch_len, kSamplerStretchBounceProbability);
+                        } else {
+                            boundary_hit = stretch_playing_head_.UpdatePositionRandomBounce(
+                                stretch_len, 1.0f);
+                        }
                     } else {
                         stretch_playing_head_.UpdatePosition(stretch_len);
                     }
                     size_t updated_stretch_wraparound_count = stretch_playing_head_.GetWrapAroundCount();
-                    if (bounced) {
+                    if (boundary_hit) {
                         stretch_declick_count_ = kStretchDeclickSamples;
                         stretch_declick_prev_ = stretch_sample;
                     } else if (stretch_declick_count_ == 0) {
                         stretch_declick_prev_ = stretch_sample;
                     }
 
-                    bool harmony_bounced = false;
+                    bool harmony_boundary_hit = false;
                     if (stretch_len >= kStretchMinPingPongLength) {
-                        harmony_bounced = stretch_harmony_head_.UpdatePositionPingPong(stretch_len);
+                        if (mode == SAMPLER) {
+                            harmony_boundary_hit = stretch_harmony_head_.UpdatePositionRandomBounce(
+                                stretch_len, kSamplerStretchBounceProbability);
+                        } else {
+                            harmony_boundary_hit = stretch_harmony_head_.UpdatePositionRandomBounce(
+                                stretch_len, 1.0f);
+                        }
                     } else {
                         stretch_harmony_head_.UpdatePosition(stretch_len);
                     }
-                    if (harmony_bounced) {
+                    if (harmony_boundary_hit) {
                         stretch_harmony_declick_count_ = kStretchDeclickSamples;
                         stretch_harmony_declick_prev_ = stretch_harmony_sample;
                     } else if (stretch_harmony_declick_count_ == 0) {

@@ -65,6 +65,15 @@ In this mode the micro-looper runs in sampler mode. The dedicated reverb and pit
 | **Double press** | Stops playback. If the sampler is currently recording, the recording is finalized and playback is stopped. |
 | **Long press** | No dedicated action in sampler mode in the current firmware. |
 
+### Alternate Footswitch
+
+| Gesture | Behavior |
+| --- | --- |
+| **Single press** | Toggles stretched sampler playback when a stretched buffer is available. In the current firmware it also toggles the reverb freeze state in the background, even though reverb is not audible in this mode. |
+| **Release** | No dedicated release action is routed for the alternate footswitch. |
+| **Double press** | Stops stretched playback. The second tap also toggles the hidden reverb freeze state once, and it does **not** also trigger the normal single-press action on tap two. |
+| **Long press** | Clears the stretched playback state and stops stretch playback. No dedicated reverb action is routed for the hold gesture. |
+
 ## OVERDUB Mode
 
 In this mode the micro-looper runs as an overdub looper. The dedicated reverb and pitch shifter are off, and the downstream delay, distortion, crusher, and mixer stages remain active.
@@ -85,6 +94,15 @@ In this mode the micro-looper runs as an overdub looper. The dedicated reverb an
 | **Single press** | Controls the overdub record cycle. If the looper is idle, the press arms recording. If a loop is already recording, the press requests a stop. When MIDI clock is active, the actual record start can wait for the next clock beat instead of starting immediately. |
 | **Double press** | Stops loop playback immediately. If recording is active, the current recording is finalized and committed. The second tap does not also trigger the normal single-press action. |
 | **Long press** | Clears the overdub looper state for a fresh restart. Recording and playback are stopped, loop buffers are cleared, and the looper is re-armed to an empty state. |
+
+### Alternate Footswitch
+
+| Gesture | Behavior |
+| --- | --- |
+| **Single press** | Starts or enables stretched playback. If no stretched layer exists yet and enough loop material is available, the press also kicks off stretch generation. In the current firmware it also toggles the reverb freeze state in the background. |
+| **Release** | No dedicated release action is routed for the alternate footswitch. |
+| **Double press** | Stops stretched playback. The second tap also toggles the hidden reverb freeze state once, and it does **not** also trigger the normal single-press action on tap two. |
+| **Long press** | Re-runs stretch generation for the current loop, when enough loop material exists, and enables stretched playback. No dedicated reverb action is routed for the hold gesture. |
 
 ## REVERB Mode
 
@@ -110,3 +128,12 @@ In the current firmware, the **bypass** footswitch does **not** bypass the rever
 | **Long press** | Clears the hidden overdub looper state for a fresh restart. |
 
 This means the footswitch can change looper state while the audible signal remains in **REVERB** mode.
+
+### Alternate Footswitch
+
+| Gesture | Behavior |
+| --- | --- |
+| **Single press** | Toggles the audible reverb freeze state. At the same time, it also sends an alternate-footswitch press to the hidden looper, which attempts to start or enable stretched playback in the background. |
+| **Release** | No dedicated release action is routed for the alternate footswitch. |
+| **Double press** | Toggles the audible reverb freeze state once and stops hidden stretched looper playback. The second tap does **not** also trigger the normal single-press action on tap two. |
+| **Long press** | Has no direct reverb action. Instead, it re-runs or starts hidden stretched playback in the background looper when enough loop material exists. |

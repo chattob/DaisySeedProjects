@@ -1,5 +1,10 @@
 #include "playing_head.h"
 #include "audio_utilities.h"
+#include "XorShift32.h"
+
+namespace {
+XorShift32 s_playing_head_rng;
+}
 
 void PlayingHead::Reset() {
     head_position_f_ = 0.0f;
@@ -110,7 +115,8 @@ void PlayingHead::UpdatePosition(size_t loop_length, float slice, float start_po
     }
 }
 
-bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
+bool PlayingHead::UpdatePositionRandomBounce(size_t loop_length,
+                                             float bounce_probability) {
     if (loop_length < 2) {
         head_position_f_ = 0.0f;
         return false;
@@ -128,29 +134,45 @@ bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
         return false;
     }
 
+    if (bounce_probability < 0.0f) {
+        bounce_probability = 0.0f;
+    } else if (bounce_probability > 1.0f) {
+        bounce_probability = 1.0f;
+    }
+
+    float random01 = (s_playing_head_rng.nextU32() >> 8) * (1.0f / 16777216.0f);
+
     float max_pos = static_cast<float>(loop_length - 1);
     float next = head_position_f_ + (step * pingpong_dir_);
-    bool bounced = false;
+    bool boundary_hit = false;
 
     if (pingpong_dir_ > 0.0f) {
         if (next > max_pos) {
             float overshoot = next - max_pos;
-            head_position_f_ = max_pos - overshoot;
-            pingpong_dir_ = -pingpong_dir_;
+            if (random01 < bounce_probability) {
+                head_position_f_ = max_pos - overshoot;
+                pingpong_dir_ = -pingpong_dir_;
+            } else {
+                head_position_f_ = overshoot;
+            }
             wrap_around_count_++;
-            bounced = true;
+            boundary_hit = true;
         }
     } else {
         if (next < 0.0f) {
             float overshoot = -next;
-            head_position_f_ = overshoot;
-            pingpong_dir_ = -pingpong_dir_;
+            if (random01 < bounce_probability) {
+                head_position_f_ = overshoot;
+                pingpong_dir_ = -pingpong_dir_;
+            } else {
+                head_position_f_ = max_pos - overshoot;
+            }
             wrap_around_count_++;
-            bounced = true;
+            boundary_hit = true;
         }
     }
 
-    if (!bounced) {
+    if (!boundary_hit) {
         head_position_f_ = next;
     }
     if (sync_remaining_ > 0) {
@@ -160,7 +182,7 @@ bool PlayingHead::UpdatePositionPingPong(size_t loop_length) {
             sync_total_ = 0;
         }
     }
-    return bounced;
+    return boundary_hit;
 }
 
 bool PlayingHead::SyncTo(const PlayingHead& target, size_t loop_length, float sync_samples) {
